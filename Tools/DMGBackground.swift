@@ -10,11 +10,12 @@ import AppKit
 let scale = CGFloat(Double(CommandLine.arguments[1]) ?? 1)
 let output = URL(filePath: CommandLine.arguments[2])
 
-// In points. The window shows 640 × 400; the extra height covers however much the title bar takes.
+// In points. Below the title bar the window shows about 368 pt of this, or 312 pt if someone has
+// Finder's path and status bars turned on, so everything sits in the top 300.
 let size = CGSize(width: 640, height: 440)
 // Icon centres, measured from the top as in settings.py.
-let appCenter = CGPoint(x: 180, y: 170)
-let applicationsCenter = CGPoint(x: 460, y: 170)
+let appCenter = CGPoint(x: 180, y: 176)
+let applicationsCenter = CGPoint(x: 460, y: 176)
 
 func rgb(_ hex: UInt32, _ alpha: CGFloat = 1) -> NSColor {
     NSColor(srgbRed: CGFloat((hex >> 16) & 0xFF) / 255, green: CGFloat((hex >> 8) & 0xFF) / 255,
@@ -63,7 +64,7 @@ ctx.setLineCap(.round)
 ctx.setLineJoin(.round)
 ctx.strokePath()
 
-// The instruction, centred below the icons and their labels.
+// The instruction, centred above the icons.
 let paragraph = NSMutableParagraphStyle()
 paragraph.alignment = .center
 let text = NSAttributedString(string: "Drag SoundBin to Applications to install it", attributes: [
@@ -72,7 +73,7 @@ let text = NSAttributedString(string: "Drag SoundBin to Applications to install 
     .paragraphStyle: paragraph,
 ])
 let textHeight = text.size().height
-text.draw(in: CGRect(x: 0, y: size.height - 318 - textHeight / 2, width: size.width, height: textHeight))
+text.draw(in: CGRect(x: 0, y: size.height - 62 - textHeight / 2, width: size.width, height: textHeight))
 
 NSGraphicsContext.current = nil
 try! rep.representation(using: .png, properties: [:])!.write(to: output)

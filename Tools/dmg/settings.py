@@ -23,6 +23,6 @@ show_tab_view = False
 icon_size = 128
 text_size = 13
 icon_locations = {
-    os.path.basename(app): (180, 170),
-    "Applications": (460, 170),
+    os.path.basename(app): (180, 176),
+    "Applications": (460, 176),
 }

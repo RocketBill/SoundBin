@@ -2,11 +2,12 @@
 # Builds a notarized SoundBin release and publishes it, with its Sparkle update feed, as a GitHub release.
 # The release is a disk image with an Applications shortcut; people download it, and Sparkle updates from it.
 #
-#   Tools/release.sh [--dry-run] [release-notes.md]
+#   Tools/release.sh [--dry-run | --yes] [release-notes.md]
 #
 # The Markdown release notes appear in Sparkle's update window and on the GitHub release page.
-# Nothing is published until you confirm at the end. --dry-run does everything except publishing,
-# including signing and notarizing, and works with uncommitted changes, to test a release first.
+# Nothing is published until you confirm at the end, or with --yes when you've already decided.
+# --dry-run does everything except publishing, including signing and notarizing, and works with
+# uncommitted changes, to test a release first.
 #
 # Before each release, bump both versions in the project, then commit and push:
 #   MARKETING_VERSION        what users see, e.g. 1.1
@@ -26,7 +27,8 @@
 # If macOS asks whether Sparkle's tools may use the signing key, choose Always Allow.
 #
 # The disk image's window (background and icon layout) comes from Tools/dmg. It's made with dmgbuild,
-# which the script installs into build/tools on first use, using the Python 3 that comes with Xcode.
+# which the script installs into build/tools on first use. That needs Python 3.10 or later
+# (brew install python); the Python that comes with macOS is too old.
 
 set -euo pipefail
 cd "${0:A:h}/.."
@@ -36,10 +38,15 @@ TEAM=KU39H5GRDS
 NOTARY_PROFILE=SoundBin
 OUT=build/release
 DRY_RUN=false
-if [[ ${1:-} == --dry-run ]]; then
-    DRY_RUN=true
+CONFIRMED=false
+while [[ ${1:-} == --* ]]; do
+    case $1 in
+        --dry-run) DRY_RUN=true ;;
+        --yes) CONFIRMED=true ;;
+        *) print -u2 "error: unknown option $1"; exit 1 ;;
+    esac
     shift
-fi
+done
 NOTES=${1:-}
 
 fail() { print -u2 "\nerror: $1"; exit 1 }
@@ -138,10 +145,21 @@ step "Making the disk image"
 # The disk image's window shows people to drag SoundBin into Applications instead.
 [[ ! -e /Volumes/SoundBin ]] \
     || fail "Eject the disk called SoundBin first. The new disk image is briefly mounted under that name while its window is laid out."
-DMGBUILD=build/tools/dmgbuild
+# 1.6.7 or later: earlier versions write a background bookmark that makes Finder on macOS 26.2+
+# show a blank window. The folder is named by version, so changing the pin installs it afresh.
+DMGBUILD_VERSION=1.6.7
+DMGBUILD=build/tools/dmgbuild-$DMGBUILD_VERSION
 if [[ ! -x $DMGBUILD/bin/dmgbuild ]]; then
-    python3 -m venv $DMGBUILD
-    $DMGBUILD/bin/pip install --quiet --disable-pip-version-check dmgbuild==1.6.5
+    python=""
+    for candidate in /opt/homebrew/bin/python3 /usr/local/bin/python3 python3; do
+        if $candidate -c 'import sys; sys.exit(sys.version_info < (3, 10))' 2>/dev/null; then
+            python=$candidate
+            break
+        fi
+    done
+    [[ -n $python ]] || fail "Making the disk image needs Python 3.10 or later. Install it with: brew install python"
+    $python -m venv $DMGBUILD
+    $DMGBUILD/bin/pip install --quiet --disable-pip-version-check dmgbuild==$DMGBUILD_VERSION
 fi
 DMG=$OUT/updates/SoundBin-$VERSION.dmg
 $DMGBUILD/bin/dmgbuild -s Tools/dmg/settings.py -D app=$APP SoundBin $DMG >/dev/null
@@ -170,7 +188,7 @@ fi
 
 step "Ready to publish SoundBin $VERSION ($BUILD_NUMBER)"
 print "This creates the public GitHub release $TAG, and every copy of SoundBin will be offered it."
-if ! read -q "?Publish now? [y/N] "; then
+if ! $CONFIRMED && ! read -q "?Publish now? [y/N] "; then
     print "\nNot published. Everything is in $OUT."
     exit 0
 fi
