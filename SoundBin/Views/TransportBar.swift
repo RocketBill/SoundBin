@@ -1,60 +1,63 @@
 import SwiftUI
 
-/// Floating glass bar for the current sound. Pieces that change every frame are split into their
-/// own views so only they redraw during playback.
+/// Floating glass bar for the current sound, always shown; before anything plays it sits empty.
+/// Pieces that change every frame are split into their own views so only they redraw during playback.
 struct TransportBar: View {
     @Environment(AppModel.self) private var model
     @State private var artwork: CGImage?
 
     var body: some View {
         let player = model.player
-        if let file = player.currentFile {
-            HStack(spacing: 14) {
-                PlayPauseButton(player: player)
+        let file = player.currentFile
+        HStack(spacing: 14) {
+            PlayPauseButton(model: model, player: player)
 
-                if let artwork {
-                    Image(decorative: artwork, scale: 1)
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                        .frame(width: 36, height: 36)
-                        .clipShape(.rect(cornerRadius: 6))
-                        .padding(.trailing, -4)
-                }
-
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(file.displayName)
-                        .font(.headline)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Text(details(for: file))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-                .frame(width: 180, alignment: .leading)
-
-                HStack(spacing: 10) {
-                    ElapsedLabel(player: player)
-                    WaveformScrubber(file: file, player: player, waveforms: model.waveforms)
-                        .frame(height: 30)
-                    Text(Format.position(player.duration, total: player.duration))
-                        .frame(width: 44, alignment: .leading)
-                }
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(.secondary)
-
-                LoopToggle(player: player)
-                VolumeControl(player: player)
+            if let artwork, file != nil {
+                Image(decorative: artwork, scale: 1)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: 36, height: 36)
+                    .clipShape(.rect(cornerRadius: 6))
+                    .padding(.trailing, -4)
             }
-            .padding(.leading, 8)
-            .padding(.trailing, 18)
-            .padding(.vertical, 8)
-            .frame(maxWidth: 1000)
-            .glassEffect(.regular, in: .capsule)
-            .task(id: model.showsArtwork ? FileKey(file) : nil) {
-                artwork = model.showsArtwork ? await model.artworks.value(for: file).image : nil
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(file?.displayName ?? "Not Playing")
+                    .font(.headline)
+                    .foregroundStyle(file == nil ? .secondary : .primary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text(file.map(details) ?? "Click a sound to play it")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
+            .frame(width: 180, alignment: .leading)
+
+            HStack(spacing: 10) {
+                ElapsedLabel(player: player)
+                WaveformScrubber(file: file, player: player, waveforms: model.waveforms)
+                    .frame(height: 30)
+                Text(Format.position(player.duration, total: player.duration))
+                    .frame(width: 44, alignment: .leading)
+            }
+            .font(.caption.monospacedDigit())
+            .foregroundStyle(.secondary)
+
+            LoopToggle(player: player)
+            PlayNextToggle(player: player)
+            VolumeControl(player: player)
+        }
+        .padding(.leading, 8)
+        .padding(.trailing, 18)
+        .padding(.vertical, 8)
+        .frame(maxWidth: 1000)
+        // The whole bar takes clicks, so none fall through its gaps to the tiles scrolling underneath.
+        .contentShape(.capsule)
+        .glassEffect(.regular, in: .capsule)
+        .task(id: model.showsArtwork ? file.map(FileKey.init) : nil) {
+            artwork = if model.showsArtwork, let file { await model.artworks.value(for: file).image } else { nil }
         }
     }
 
@@ -66,11 +69,17 @@ struct TransportBar: View {
 }
 
 private struct PlayPauseButton: View {
+    let model: AppModel
     let player: AudioPlayer
 
     var body: some View {
         Button {
-            player.togglePlayPause()
+            // Before anything has played, the button starts the selected sound.
+            if player.currentFile == nil, let file = model.selectedFiles.first {
+                model.play(file)
+            } else {
+                player.togglePlayPause()
+            }
         } label: {
             Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
                 .font(.system(size: 16, weight: .semibold))
@@ -79,6 +88,7 @@ private struct PlayPauseButton: View {
         }
         .buttonStyle(.glassProminent)
         .buttonBorderShape(.circle)
+        .disabled(player.currentFile == nil && model.selection.isEmpty)
         .help(player.isPlaying ? "Pause" : "Play")
     }
 }
@@ -106,6 +116,20 @@ private struct LoopToggle: View {
     }
 }
 
+private struct PlayNextToggle: View {
+    @Bindable var player: AudioPlayer
+
+    var body: some View {
+        Toggle(isOn: $player.playsNext) {
+            Image(systemName: "text.line.first.and.arrowtriangle.forward")
+        }
+        .toggleStyle(.button)
+        .buttonStyle(.borderless)
+        .foregroundStyle(player.playsNext ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+        .help(player.playsNext ? "Playing Next Sound Automatically" : "Play Next Sound Automatically")
+    }
+}
+
 private struct VolumeControl: View {
     @Bindable var player: AudioPlayer
 
@@ -122,9 +146,9 @@ private struct VolumeControl: View {
     }
 }
 
-/// The current sound's waveform; click or drag anywhere on it to jump.
+/// The current sound's waveform; click or drag anywhere on it to jump. Placeholder dashes when nothing's loaded.
 private struct WaveformScrubber: View {
-    let file: AudioFile
+    let file: AudioFile?
     let player: AudioPlayer
     let waveforms: BackgroundLoader<Waveform>
 
@@ -159,10 +183,11 @@ private struct WaveformScrubber: View {
                         dragProgress = nil
                     }
             )
+            .allowsHitTesting(file != nil)
         }
-        .task(id: FileKey(file)) {
+        .task(id: file.map(FileKey.init)) {
             waveform = nil
-            waveform = await waveforms.value(for: file)
+            if let file { waveform = await waveforms.value(for: file) }
         }
         .accessibilityElement()
         .accessibilityLabel("Playback position")

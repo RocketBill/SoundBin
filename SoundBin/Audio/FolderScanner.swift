@@ -25,20 +25,31 @@ nonisolated enum FolderScanner {
         return await resolve(candidates, reusing: known, progress: progress)
     }
 
-    /// Reads the given files directly, for lists that don't come from one folder (favourites).
-    /// Each file is grouped under the name of its parent folder.
+    /// Reads the given files directly, for lists that don't come from one folder (favourites and collections).
+    /// Each file is grouped under the name of its parent folder, or all together if `groupedByFolder` is false.
     @concurrent
-    static func read(files urls: [URL], reusing known: [AudioFile] = []) async -> [AudioFile] {
+    static func read(files urls: [URL], reusing known: [AudioFile] = [], groupedByFolder: Bool = true) async -> [AudioFile] {
         let candidates = urls.compactMap { url -> Candidate? in
             guard let values = try? url.resourceValues(forKeys: Set(resourceKeys)) else { return nil }
             return Candidate(
                 url: url,
-                folder: url.deletingLastPathComponent().lastPathComponent,
+                folder: groupedByFolder ? url.deletingLastPathComponent().lastPathComponent : "",
                 fileSize: Int64(values.fileSize ?? 0),
                 modificationDate: values.contentModificationDate ?? .distantPast
             )
         }
         return await resolve(candidates, reusing: known, progress: { _ in })
+    }
+
+    /// True for sound files SoundBin can list, such as files dropped from Finder.
+    static func isAudioFile(_ url: URL) -> Bool {
+        guard let values = try? url.resourceValues(forKeys: Set(resourceKeys)) else { return false }
+        return isAudio(values)
+    }
+
+    private static func isAudio(_ values: URLResourceValues) -> Bool {
+        guard values.isRegularFile == true, let type = values.contentType else { return false }
+        return type.conforms(to: .audio) && !type.conforms(to: .midi)
     }
 
     /// Groups files into sections by folder. Root files come first, then subfolders in Finder order.
@@ -75,12 +86,7 @@ nonisolated enum FolderScanner {
         var candidates: [Candidate] = []
         while let url = enumerator.nextObject() as? URL {
             if Task.isCancelled { return [] }
-            guard let values = try? url.resourceValues(forKeys: Set(resourceKeys)),
-                  values.isRegularFile == true,
-                  let type = values.contentType,
-                  type.conforms(to: .audio),
-                  !type.conforms(to: .midi)
-            else { continue }
+            guard let values = try? url.resourceValues(forKeys: Set(resourceKeys)), isAudio(values) else { continue }
 
             candidates.append(Candidate(
                 url: url,

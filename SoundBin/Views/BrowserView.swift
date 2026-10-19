@@ -3,13 +3,12 @@ import SwiftUI
 /// The detail column: the grid of sounds plus whatever empty state applies.
 struct BrowserView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.openSettings) private var openSettings
 
     private static let transportClearance: CGFloat = 84
 
     var body: some View {
         @Bindable var model = model
-        let hasTransport = model.player.currentFile != nil
-
         ZStack {
             if model.totalCount > 0 {
                 SoundGridView(
@@ -20,7 +19,7 @@ struct BrowserView: View {
                     tileWidth: model.tileSize,
                     showsHeaders: model.showsSectionHeaders,
                     showsArtwork: model.showsArtwork,
-                    bottomInset: hasTransport ? Self.transportClearance : 0
+                    bottomInset: Self.transportClearance
                 )
                 // Scroll under the toolbar's glass, but start beside the sidebar rather than beneath it.
                 .ignoresSafeArea(edges: .vertical)
@@ -30,22 +29,16 @@ struct BrowserView: View {
         // Fill the column even when only a small placeholder shows, so the transport stays at the bottom.
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .overlay(alignment: .bottom) {
-            if hasTransport {
-                TransportBar()
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 14)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
+            TransportBar()
+                .padding(.horizontal, 16)
+                .padding(.bottom, 14)
         }
-        .animation(.smooth(duration: 0.25), value: hasTransport)
         .navigationTitle(model.title)
         .navigationSubtitle(model.subtitle)
         .searchable(text: $model.searchText, placement: .toolbar, prompt: "Search")
         .toolbar { toolbarContent }
         .dropDestination(for: URL.self) { urls, _ in
-            guard let url = urls.first else { return false }
-            model.open(url)
-            return true
+            model.handleDrop(urls)
         }
     }
 
@@ -85,6 +78,9 @@ struct BrowserView: View {
             if model.source == .favourites {
                 ContentUnavailableView("No Favourites", systemImage: "star",
                                        description: Text("Click the star on a sound, or select it and press Full Stop."))
+            } else if case .collection = model.source {
+                ContentUnavailableView("No Sounds in This Collection", systemImage: "rectangle.stack",
+                                       description: Text("Drag sounds here or onto the collection in the sidebar, or right-click a sound and choose Add to Collection."))
             } else {
                 ContentUnavailableView("No Sounds", systemImage: "waveform.slash",
                                        description: Text("This folder doesn’t contain any audio files SoundBin can play."))
@@ -92,6 +88,14 @@ struct BrowserView: View {
         } else if model.sections.isEmpty {
             if model.isSearching {
                 ContentUnavailableView.search(text: model.searchText)
+            } else if !model.labelFilter.isEmpty {
+                ContentUnavailableView {
+                    Label("No Labelled Sounds", systemImage: "circle.grid.2x1.fill")
+                } description: {
+                    Text("Nothing here has the labels you’re showing.")
+                } actions: {
+                    Button("Show All Sounds") { model.labelFilter = [] }
+                }
             } else if model.subfoldersAreHidingEverything {
                 ContentUnavailableView {
                     Label("All Sounds Are in Subfolders", systemImage: "folder")
@@ -128,7 +132,7 @@ struct BrowserView: View {
         ToolbarItem {
             Menu {
                 Toggle("Include Subfolders", isOn: $model.includeSubfolders)
-                    .disabled(model.source == .favourites)
+                    .disabled(model.source?.isFileList == true)
                 Divider()
                 Picker("Sort By", selection: $model.sortKey) {
                     ForEach(SortKey.allCases) { key in
@@ -141,8 +145,28 @@ struct BrowserView: View {
                     Text("Descending").tag(false)
                 }
                 .pickerStyle(.inline)
+                Section("Show Labels") {
+                    ForEach(SoundLabel.allCases) { label in
+                        Toggle(isOn: Binding(
+                            get: { model.labelFilter.contains(label) },
+                            set: { isOn in
+                                if isOn { model.labelFilter.insert(label) } else { model.labelFilter.remove(label) }
+                            }
+                        )) {
+                            Label { Text(model.library.name(of: label)) } icon: { Image(nsImage: label.dot) }
+                        }
+                    }
+                    Button("Show All Sounds") { model.labelFilter = [] }
+                        .disabled(model.labelFilter.isEmpty)
+                    Button("Edit Labels…") {
+                        UserDefaults.standard.set(SettingsView.Tab.labels.rawValue, forKey: SettingsView.tabKey)
+                        openSettings()
+                    }
+                }
             } label: {
-                Label("Sort and Filter", systemImage: "line.3.horizontal.decrease")
+                // Filled while a label filter hides sounds, as Mail does.
+                Label("Sort and Filter", systemImage: model.labelFilter.isEmpty
+                      ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
             }
             .help("Sort and filter")
         }

@@ -10,7 +10,8 @@ import SwiftUI
 ///
 /// Script commands: open <path>, source favourites, wait <seconds>, snap <name>, key <name|char>,
 /// click <section> <item>, search <text>, tile <width>, subfolders on|off, collapse <section>,
-/// sort <key> [desc], drag <tile width>, updates background|autodownload on|off|dump, quit.
+/// sort <key> [desc], loop|playnext on|off, label <0-6> <name>, labelfilter <0,3|none>, labelmenu, hitrow <y>, drag <tile width>, updates background|autodownload on|off|dump,
+/// selectall, collection new|show|add|remove|rename|export|delete <name>[|<new name or folder path>], quit.
 /// Snapshots are written to the app container's tmp folder.
 enum DebugLaunchOptions {
     static func apply(to model: AppModel, updater: Updater) {
@@ -85,6 +86,8 @@ enum DebugLaunchOptions {
                 model.player.seek(to: Double(argument) ?? 0)
             case "loop":
                 model.player.isLooping = argument == "on"
+            case "playnext":
+                model.player.playsNext = argument == "on"
             case "playpause":
                 model.player.togglePlayPause()
             case "playfile":
@@ -115,8 +118,43 @@ enum DebugLaunchOptions {
             case "updates" where argument == "dump":
                 let info = Bundle.main.infoDictionary ?? [:]
                 print("[updates] version \(info["CFBundleShortVersionString"] ?? "-") (\(info["CFBundleVersion"] ?? "-")) feed \(info["SUFeedURL"] ?? "-") canCheck \(updater.canCheckForUpdates) autoCheck \(updater.automaticallyChecksForUpdates) autoDownload \(updater.automaticallyDownloadsUpdates) allowsAutomatic \(updater.allowsAutomaticUpdates) lastCheck \(updater.lastUpdateCheckDate.map { "\($0)" } ?? "-")")
+            case "about":
+                AboutPanel.show()
+                try? await Task.sleep(for: .milliseconds(300))
+                if let panel = NSApp.windows.first(where: { $0.isVisible && $0 != mainWindow }), let view = panel.contentView,
+                   let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+                    view.cacheDisplay(in: view.bounds, to: rep)
+                    let url = URL(filePath: NSTemporaryDirectory()).appending(path: "about.png")
+                    try? rep.representation(using: .png, properties: [:])?.write(to: url)
+                    print("[script] wrote \(url.path)")
+                }
+            case "selectall":
+                model.selection = Set(model.sections.flatMap(\.files).map(\.url))
+            case "collection":
+                await runCollectionCommand(argument, model: model)
             case "dump":
                 dump(model)
+            case "label":
+                // label <0-6> <sound name>
+                let parts = argument.split(separator: " ", maxSplits: 1).map(String.init)
+                if parts.count == 2, let index = Int(parts[0]), let label = SoundLabel(rawValue: index),
+                   let file = model.sections.flatMap(\.files).first(where: { $0.displayName == parts[1] }) {
+                    model.toggleLabel(label, for: [file])
+                }
+            case "labelfilter":
+                // labelfilter 0,3 or labelfilter none
+                model.labelFilter = Set(argument.split(separator: ",").compactMap { Int($0).flatMap(SoundLabel.init) })
+            case "labelmenu":
+                let states: [SoundLabel: LabelMenuView.State] = [.red: .on, .orange: .mixed]
+                let view = LabelMenuView(states: states, name: { $0.defaultName }) { _ in }
+                if let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+                    view.cacheDisplay(in: view.bounds, to: rep)
+                    let url = URL(filePath: NSTemporaryDirectory()).appending(path: "labelmenu.png")
+                    try? rep.representation(using: .png, properties: [:])?.write(to: url)
+                    print("[script] wrote \(url.path)")
+                }
+            case "hitrow":
+                hitRow(at: Double(argument) ?? 0)
             case "quit":
                 NSApp.terminate(nil)
             default:
@@ -126,12 +164,64 @@ enum DebugLaunchOptions {
         }
     }
 
+    /// "collection add Drums" adds the selection to Drums; "collection rename Drums|Kicks";
+    /// "collection export Drums|/path/to/new folder" makes it a real folder without the save panel.
+    private static func runCollectionCommand(_ argument: String, model: AppModel) async {
+        let parts = argument.split(separator: " ", maxSplits: 1).map(String.init)
+        guard let action = parts.first else { return }
+        let names = (parts.count > 1 ? parts[1] : "").split(separator: "|", maxSplits: 1).map(String.init)
+        let name = names.first ?? ""
+        let collection = model.library.collections.first { $0.name == name }
+        switch action {
+        case "new":
+            model.newCollection()
+            if let id = model.renamingCollection { model.renameCollection(id, to: name) }
+            model.renamingCollection = nil
+        case "show":
+            guard let collection else { return }
+            model.source = .collection(collection.id)
+            await waitForLoad(model)
+        case "add":
+            guard let collection else { return }
+            model.addToCollection(model.selectedFiles.map(\.url), collection.id)
+        case "remove":
+            model.removeFromCollection(model.selectedFiles)
+        case "rename":
+            guard let collection, names.count == 2 else { return }
+            model.renameCollection(collection.id, to: names[1])
+        case "export":
+            guard let collection, names.count == 2 else { return }
+            model.makeRealFolder(collection.id, at: URL(filePath: names[1], directoryHint: .isDirectory))
+            while model.folderCopyProgress[collection.id] != nil {
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+            await waitForLoad(model)
+        case "delete":
+            guard let collection else { return }
+            model.deleteCollection(collection.id)
+        default:
+            print("[script] unknown collection command \(action)")
+        }
+    }
+
     private static func waitForLoad(_ model: AppModel) async {
         try? await Task.sleep(for: .milliseconds(200))
         while model.isScanning {
             try? await Task.sleep(for: .milliseconds(100))
         }
         try? await Task.sleep(for: .milliseconds(500))
+    }
+
+    /// Walks across the window at height `y` (from the bottom) and reports which view would receive a click
+    /// along the way, as runs of x positions.
+    private static func hitRow(at y: Double) {
+        guard let window = mainWindow, let root = window.contentView?.superview else { return }
+        var runs: [(start: Double, name: String)] = []
+        for x in stride(from: 0.0, through: window.frame.width, by: 2) {
+            let name = root.hitTest(NSPoint(x: x, y: y)).map { String(describing: type(of: $0)).prefix(30) } ?? "-"
+            if runs.last?.name != String(name) { runs.append((x, String(name))) }
+        }
+        print("[hit] y \(y): " + runs.map { "\(Int($0.start)) \($0.name)" }.joined(separator: " | "))
     }
 
     private static var mainWindow: NSWindow? {
@@ -199,7 +289,7 @@ enum DebugLaunchOptions {
         let keys: [String: (UInt16, String)] = [
             "up": (126, "\u{F700}"), "down": (125, "\u{F701}"), "left": (123, "\u{F702}"),
             "right": (124, "\u{F703}"), "space": (49, " "), "escape": (53, "\u{1b}"),
-            "return": (36, "\r"), "period": (47, "."),
+            "return": (36, "\r"), "period": (47, "."), "delete": (51, "\u{7f}"),
         ]
         let (code, characters) = keys[name] ?? (0, name)
         for type in [NSEvent.EventType.keyDown, .keyUp] {
@@ -237,7 +327,9 @@ enum DebugLaunchOptions {
 
     private static func dump(_ model: AppModel) {
         let player = model.player
-        print("[dump] playing \(player.currentFile?.displayName ?? "-") isPlaying \(player.isPlaying) t \(String(format: "%.2f", player.currentTime))/\(String(format: "%.2f", player.duration)) loop \(player.isLooping) error \(player.lastError ?? "-")")
+        print("[dump] playing \(player.currentFile?.displayName ?? "-") isPlaying \(player.isPlaying) t \(String(format: "%.2f", player.currentTime))/\(String(format: "%.2f", player.duration)) loop \(player.isLooping) next \(player.playsNext) error \(player.lastError ?? "-")")
+        print("[dump] source \(model.source?.storageKey ?? "-") title \(model.title) collections \(model.library.collections.map { "\($0.name)(\($0.files.count))" })")
+        print("[dump] labels filter \(model.labelFilter.map(\.rawValue).sorted()) visible \(model.sections.flatMap(\.files).map { "\($0.displayName)\(model.labels(of: $0).map(\.rawValue).sorted())" })")
         print("[dump] selection \(model.selectedFiles.map(\.displayName)) favourites \(model.library.favourites.count) visible \(model.visibleCount)/\(model.totalCount) sections \(model.sections.map { "\($0.title)(\($0.files.count)\($0.isCollapsed ? ",collapsed" : ""))" })")
         guard let window = mainWindow, let collectionView = findCollectionView(in: window.contentView) else {
             print("[dump] no collection view")

@@ -11,8 +11,22 @@ final class AudioPlayer {
     private(set) var lastError: String?
 
     var isLooping = UserDefaults.standard.bool(forKey: AudioPlayer.loopingKey) {
-        didSet { UserDefaults.standard.set(isLooping, forKey: Self.loopingKey) }
+        didSet {
+            UserDefaults.standard.set(isLooping, forKey: Self.loopingKey)
+            if isLooping { playsNext = false }
+        }
     }
+
+    /// When a sound ends, carry on with the one after it. Off by default; exclusive with looping.
+    var playsNext = UserDefaults.standard.bool(forKey: AudioPlayer.playsNextKey) {
+        didSet {
+            UserDefaults.standard.set(playsNext, forKey: Self.playsNextKey)
+            if playsNext { isLooping = false }
+        }
+    }
+
+    /// Supplies the sound after a given one, in the order the browser shows them.
+    @ObservationIgnored var nextFile: ((AudioFile) -> AudioFile?)?
 
     var volume: Double = UserDefaults.standard.object(forKey: AudioPlayer.volumeKey) as? Double ?? 0.8 {
         didSet {
@@ -41,6 +55,7 @@ final class AudioPlayer {
 
     private static let volumeKey = "playerVolume"
     private static let loopingKey = "playerLooping"
+    private static let playsNextKey = "playerPlaysNext"
     /// Playback decodes the file in chunks of this length, keeping a few queued ahead of the playhead.
     private static let chunkDuration: TimeInterval = 0.5
     private static let chunksAhead = 4
@@ -213,6 +228,8 @@ final class AudioPlayer {
             // Stopping the node restarts its clock, which `livePosition()` measures from.
             interruptSegment()
             startPlayback(at: 0)
+        } else if playsNext, let currentFile, let next = nextFile?(currentFile) {
+            play(next)
         } else {
             stop()
         }

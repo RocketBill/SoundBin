@@ -7,7 +7,6 @@ final class SectionHeaderView: NSView, NSCollectionViewElement {
 
     var onToggle: (() -> Void)?
 
-    private let background = NSVisualEffectView()
     private let chevron = NSImageView()
     private let folderIcon = NSImageView()
     private let titleLabel = NSTextField(labelWithString: "")
@@ -15,10 +14,6 @@ final class SectionHeaderView: NSView, NSCollectionViewElement {
 
     override init(frame: NSRect) {
         super.init(frame: frame)
-        background.material = .headerView
-        background.blendingMode = .withinWindow
-        background.state = .followsWindowActiveState
-
         chevron.symbolConfiguration = .init(pointSize: 10, weight: .bold)
         chevron.contentTintColor = .tertiaryLabelColor
 
@@ -31,7 +26,7 @@ final class SectionHeaderView: NSView, NSCollectionViewElement {
         countLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
         countLabel.textColor = .secondaryLabelColor
 
-        for view in [background, chevron, folderIcon, titleLabel, countLabel] {
+        for view in [chevron, folderIcon, titleLabel, countLabel] {
             addSubview(view)
         }
     }
@@ -53,7 +48,6 @@ final class SectionHeaderView: NSView, NSCollectionViewElement {
 
     override func layout() {
         super.layout()
-        background.frame = bounds
         let midY = bounds.midY
         chevron.frame = NSRect(x: 22, y: midY - 7, width: 12, height: 14)
         folderIcon.frame = NSRect(x: 38, y: midY - 9, width: 20, height: 18)

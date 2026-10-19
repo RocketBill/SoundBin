@@ -3,12 +3,19 @@ import Observation
 
 nonisolated enum BrowseSource: Hashable, Sendable {
     case favourites
+    case collection(SavedCollection.ID)
     case folder(SavedFolder.ID)
+
+    /// Favourites and collections list files from anywhere, rather than everything in one folder.
+    var isFileList: Bool {
+        if case .folder = self { false } else { true }
+    }
 
     /// A stable string form, used in preferences and cache file names.
     var storageKey: String {
         switch self {
         case .favourites: "favourites"
+        case .collection(let id): "collection-\(id.uuidString)"
         case .folder(let id): id.uuidString
         }
     }
@@ -16,6 +23,8 @@ nonisolated enum BrowseSource: Hashable, Sendable {
     init?(storageKey: String) {
         if storageKey == "favourites" {
             self = .favourites
+        } else if storageKey.hasPrefix("collection-"), let id = UUID(uuidString: String(storageKey.dropFirst("collection-".count))) {
+            self = .collection(id)
         } else if let id = UUID(uuidString: storageKey) {
             self = .folder(id)
         } else {
@@ -36,7 +45,12 @@ nonisolated enum Preferences {
     static let playOnArrowKeys = "playOnArrowKeys"
 
     static func registerDefaults() {
-        UserDefaults.standard.register(defaults: [playOnClick: true, playOnArrowKeys: true])
+        UserDefaults.standard.register(defaults: [
+            playOnClick: true,
+            playOnArrowKeys: true,
+            // AppKit waits about a second before the first tooltip; the transport's icon buttons need theirs sooner.
+            "NSInitialToolTipDelay": 75,
+        ])
     }
 }
 
@@ -73,6 +87,11 @@ final class AppModel {
 
     var searchText = "" {
         didSet { if searchText != oldValue { applyFilter() } }
+    }
+
+    /// Shows only sounds carrying at least one of these labels. Empty shows everything.
+    var labelFilter: Set<SoundLabel> = [] {
+        didSet { if labelFilter != oldValue { applyFilter() } }
     }
 
     var sortKey: SortKey = SortKey(rawValue: UserDefaults.standard.string(forKey: "sortKey") ?? "") ?? .name {
@@ -116,6 +135,11 @@ final class AppModel {
     /// URLs of the selected tiles. The grid owns selection; this mirrors it for menus and commands.
     var selection: Set<URL> = []
 
+    /// The collection whose name is being edited in the sidebar, as happens straight after making one.
+    var renamingCollection: SavedCollection.ID?
+    /// How far along each collection being made into a real folder is, from 0 to 1.
+    private(set) var folderCopyProgress: [SavedCollection.ID: Double] = [:]
+
     static let tileSizeRange: ClosedRange<Double> = 140...340
 
     /// A source's files as last seen, so switching back to it shows them straight away.
@@ -145,6 +169,7 @@ final class AppModel {
 
     init() {
         Preferences.registerDefaults()
+        player.nextFile = { [unowned self] in file(after: $0) }
         source = restoreLastSource()
         reload()
         preloadListings()
@@ -159,7 +184,9 @@ final class AppModel {
     var subtitle: String {
         if isScanning { return "Scanning…" }
         guard source != nil, !folderIsMissing else { return "" }
-        if !searchText.isEmpty { return "\(visibleCount.formatted()) of \(Format.soundCount(totalCount))" }
+        if !searchText.isEmpty || !labelFilter.isEmpty {
+            return "\(visibleCount.formatted()) of \(Format.soundCount(totalCount))"
+        }
         return Format.soundCount(visibleCount)
     }
 
@@ -294,6 +321,13 @@ final class AppModel {
 
         case .favourites:
             rootTitle = "Favourites"
+
+        case .collection(let id):
+            guard let collection = library.collection(id: id) else {
+                source = nil
+                return
+            }
+            rootTitle = collection.name
         }
 
         let listing = cachedListing()
@@ -304,7 +338,7 @@ final class AppModel {
             isScanning = true
             applyFilter()
         }
-        // Scanning starts access to favourites, so it has to come before any waveform loads.
+        // Scanning starts access to listed files, so it has to come before any waveform loads.
         rescan()
         if listing != nil {
             prefetch(arrangedSections.flatMap(\.files))
@@ -351,15 +385,25 @@ final class AppModel {
                 await finishScan(found, generation: generation)
             }
 
-        case .favourites:
-            let urls = library.resolveFavourites()
+        case .favourites, .collection:
+            let urls = listedURLs(in: source)
             urls.forEach(beginAccess)
-            let known = files.isEmpty ? (listings[.favourites]?.files ?? []) : files
+            let known = files.isEmpty ? (listings[source]?.files ?? []) : files
+            // Favourites are grouped by the folder each sound came from; collections are one flat grid.
+            let grouped = source == .favourites
             loadTask = Task { [weak self] in
-                let found = await FolderScanner.read(files: urls, reusing: known)
+                let found = await FolderScanner.read(files: urls, reusing: known, groupedByFolder: grouped)
                 guard let self, !Task.isCancelled, generation == loadGeneration else { return }
                 await finishScan(found, generation: generation)
             }
+        }
+    }
+
+    private func listedURLs(in source: BrowseSource) -> [URL] {
+        switch source {
+        case .favourites: library.resolveFavourites()
+        case .collection(let id): library.resolveFiles(inCollection: id).found
+        case .folder: []
         }
     }
 
@@ -416,11 +460,18 @@ final class AppModel {
     /// The current source's files from earlier in this session, if they're still valid.
     private func cachedListing() -> Listing? {
         guard let source, var listing = listings[source], listing.rootPath == rootPath else { return nil }
-        if source == .favourites {
-            let count = listing.files.count
+        // Drop anything taken out of the list since the listing was made.
+        let count = listing.files.count
+        switch source {
+        case .favourites:
             listing.files.removeAll { !isFavourite($0) }
-            if listing.files.count != count { listing.arranged = nil }
+        case .collection(let id):
+            let paths = library.paths(inCollection: id)
+            listing.files.removeAll { !paths.contains($0.url.standardizedFileURL.path) }
+        case .folder:
+            break
         }
+        if listing.files.count != count { listing.arranged = nil }
         if listing.arrangement != arrangement { listing.arranged = nil }
         return listing
     }
@@ -440,6 +491,7 @@ final class AppModel {
     private func preloadListings() {
         let others: [(BrowseSource, String?, String)] = library.folders.map { (.folder($0.id), $0.path, $0.name) }
             + [(.favourites, nil, "Favourites")]
+            + library.collections.map { (.collection($0.id), nil, $0.name) }
         Task { [weak self] in
             for (source, rootPath, title) in others {
                 guard let self else { return }
@@ -487,6 +539,7 @@ final class AppModel {
     private func rootTitle(for source: BrowseSource) -> String? {
         switch source {
         case .favourites: "Favourites"
+        case .collection(let id): library.collection(id: id)?.name
         case .folder(let id): library.folder(id: id)?.name
         }
     }
@@ -528,17 +581,21 @@ final class AppModel {
 
     private func applyFilter() {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let showsSubfolders = includeSubfolders || source == .favourites
+        let labelFilter = labelFilter
+        let showsSubfolders = includeSubfolders || source?.isFileList == true
         var result: [FileSection] = []
         var visible = 0
 
         for section in arrangedSections where showsSubfolders || section.id.isEmpty {
-            let matches = query.isEmpty ? section.files : section.files.filter {
+            var matches = query.isEmpty ? section.files : section.files.filter {
                 $0.displayName.localizedStandardContains(query) || section.title.localizedStandardContains(query)
             }
+            if !labelFilter.isEmpty {
+                matches = matches.filter { !library.labels(for: $0.url).isDisjoint(with: labelFilter) }
+            }
             guard !matches.isEmpty else { continue }
-            // Searching expands everything so matches are never hidden in a collapsed group.
-            let isCollapsed = query.isEmpty && collapsedSections.contains(section.id)
+            // Searching or filtering expands everything so matches are never hidden in a collapsed group.
+            let isCollapsed = query.isEmpty && labelFilter.isEmpty && collapsedSections.contains(section.id)
             result.append(FileSection(
                 id: section.id,
                 title: section.title,
@@ -581,6 +638,23 @@ final class AppModel {
         library.isFavourite(file.url)
     }
 
+    func labels(of file: AudioFile) -> Set<SoundLabel> {
+        library.labels(for: file.url)
+    }
+
+    /// Adds the label to every target, or removes it if they all have it already.
+    func toggleLabel(_ label: SoundLabel, for targets: [AudioFile]) {
+        guard !targets.isEmpty else { return }
+        let isOn = !targets.allSatisfy { labels(of: $0).contains(label) }
+        library.setLabel(label, isOn, for: targets.map(\.url))
+        if !labelFilter.isEmpty { applyFilter() }
+    }
+
+    func clearLabels(for targets: [AudioFile]) {
+        library.clearLabels(for: targets.map(\.url))
+        if !labelFilter.isEmpty { applyFilter() }
+    }
+
     /// Stars the files, or unstars them if they're all starred already.
     func toggleFavourite(_ targets: [AudioFile]) {
         guard !targets.isEmpty else { return }
@@ -591,34 +665,180 @@ final class AppModel {
 
         if source == .favourites {
             guard !makeFavourite else { return }
-            files.removeAll { changedURLs.contains($0.url) }
-            totalCount = files.count
-            arrangedSections = arrangedSections.compactMap { section in
-                var section = section
-                section.files.removeAll { changedURLs.contains($0.url) }
-                return section.files.isEmpty ? nil : section
-            }
-            applyFilter()
-            rememberListing(saving: true)
-        } else if var listing = listings[.favourites] {
-            // Keep the cached favourites in step, so switching to them is instant and up to date.
-            if makeFavourite {
-                let existing = Set(listing.files.map(\.url))
-                listing.files += changed
-                    .filter { !existing.contains($0.url) }
-                    .map { $0.inFolder($0.url.deletingLastPathComponent().lastPathComponent) }
-            } else {
-                listing.files.removeAll { changedURLs.contains($0.url) }
-            }
-            listing.arranged = nil
-            listings[.favourites] = listing
-            let files = listing.files
-            Task { await ListingStore.save(files, for: .favourites, root: nil) }
+            removeFromCurrentListing(changedURLs)
+        } else if makeFavourite {
+            updateListing(.favourites, adding: changed)
+        } else {
+            updateListing(.favourites, removing: changedURLs)
         }
+    }
+
+    /// Takes files off screen without rescanning, after they're removed from the favourites or collection being shown.
+    private func removeFromCurrentListing(_ urls: Set<URL>) {
+        files.removeAll { urls.contains($0.url) }
+        totalCount = files.count
+        arrangedSections = arrangedSections.compactMap { section in
+            var section = section
+            section.files.removeAll { urls.contains($0.url) }
+            return section.files.isEmpty ? nil : section
+        }
+        applyFilter()
+        rememberListing(saving: true)
+    }
+
+    /// Keeps another list's cached files in step with a change made elsewhere, so switching to it is
+    /// instant and up to date.
+    private func updateListing(_ source: BrowseSource, adding added: [AudioFile] = [], removing removed: Set<URL> = []) {
+        guard source != self.source, var listing = listings[source] else { return }
+        let existing = Set(listing.files.map(\.url))
+        listing.files += added
+            .filter { !existing.contains($0.url) }
+            .map { $0.inFolder(source == .favourites ? $0.url.deletingLastPathComponent().lastPathComponent : "") }
+        listing.files.removeAll { removed.contains($0.url) }
+        listing.arranged = nil
+        listings[source] = listing
+        let files = listing.files
+        Task { await ListingStore.save(files, for: source, root: nil) }
+    }
+
+    // MARK: Collections
+
+    /// Makes a collection, holding `targets` if given, and starts editing its name in the sidebar.
+    /// An empty collection is shown straight away, ready for sounds to be dragged in.
+    func newCollection(with targets: [AudioFile] = []) {
+        let collection = library.addCollection()
+        if targets.isEmpty {
+            source = .collection(collection.id)
+        } else {
+            addToCollection(targets.map(\.url), collection.id)
+        }
+        renamingCollection = collection.id
+    }
+
+    /// Adds sounds dragged from the grid or Finder, or chosen from a menu. Anything that isn't a sound
+    /// file is ignored. Returns false if there was nothing to add.
+    @discardableResult
+    func addToCollection(_ urls: [URL], _ id: SavedCollection.ID) -> Bool {
+        let sounds = urls.filter(FolderScanner.isAudioFile)
+        guard !sounds.isEmpty else { return false }
+        let added = Set(library.addFiles(sounds, toCollection: id).map(\.standardizedFileURL.path))
+        guard !added.isEmpty else { return true }
+
+        let target = BrowseSource.collection(id)
+        if source == target {
+            rescan()
+        } else {
+            // Sounds from the grid have been read already; anything else is picked up when the collection is next shown.
+            updateListing(target, adding: files.filter { added.contains($0.url.standardizedFileURL.path) })
+        }
+        return true
+    }
+
+    func removeFromCollection(_ targets: [AudioFile]) {
+        guard case .collection(let id) = source, !targets.isEmpty else { return }
+        library.removeFiles(targets.map(\.url), fromCollection: id)
+        removeFromCurrentListing(Set(targets.map(\.url)))
+    }
+
+    func renameCollection(_ id: SavedCollection.ID, to name: String) {
+        library.renameCollection(id: id, to: name)
+        if source == .collection(id), let collection = library.collection(id: id), collection.name != rootTitle {
+            rootTitle = collection.name
+            rearrange()
+        }
+    }
+
+    func deleteCollection(_ id: SavedCollection.ID) {
+        if source == .collection(id) { source = nil }
+        library.removeCollection(id: id)
+        listings[.collection(id)] = nil
+        ListingStore.remove(.collection(id))
+    }
+
+    /// Asks where to make a real folder from a collection, then copies its sounds there.
+    func presentMakeRealFolder(_ id: SavedCollection.ID) {
+        guard let collection = library.collection(id: id), folderCopyProgress[id] == nil else { return }
+        let panel = NSSavePanel()
+        panel.title = "Make Real Folder"
+        panel.message = "Choose where to make a folder of copies of the sounds in “\(collection.name)”."
+        panel.prompt = "Make Folder"
+        panel.nameFieldLabel = "Folder Name:"
+        panel.nameFieldStringValue = collection.name
+        panel.canCreateDirectories = true
+        let validator = NewFolderValidator()
+        panel.delegate = validator
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        makeRealFolder(id, at: url)
+    }
+
+    /// Copies a collection's sounds into a new folder at `destination`. If every sound made it, the folder
+    /// takes the collection's place in the sidebar; otherwise the collection is kept so nothing is lost track of.
+    func makeRealFolder(_ id: SavedCollection.ID, at destination: URL) {
+        guard let collection = library.collection(id: id), folderCopyProgress[id] == nil else { return }
+        let (sources, missing) = library.resolveFiles(inCollection: id)
+        folderCopyProgress[id] = 0
+        let progress: @Sendable (Double) -> Void = { [weak self] fraction in
+            Task { @MainActor in
+                if self?.folderCopyProgress[id] != nil { self?.folderCopyProgress[id] = fraction }
+            }
+        }
+
+        Task { [weak self] in
+            let result = await CollectionCopier.copy(sources, into: destination, progress: progress)
+            guard let self else { return }
+            folderCopyProgress[id] = nil
+            switch result {
+            case .failure(let error):
+                showAlert("Couldn’t Make “\(destination.lastPathComponent)”", error.localizedDescription)
+            case .success(let failed):
+                let skipped = missing + failed
+                open(destination)
+                if skipped.isEmpty {
+                    deleteCollection(id)
+                } else {
+                    let names = skipped.prefix(10).joined(separator: "\n")
+                    let more = skipped.count > 10 ? "\n…and \(skipped.count - 10) more" : ""
+                    showAlert("Some Sounds Couldn’t Be Copied",
+                              "“\(collection.name)” was kept, so you can find these sounds again:\n\n\(names)\(more)")
+                }
+            }
+        }
+    }
+
+    private func showAlert(_ title: String, _ message: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        if let window = NSApp.mainWindow ?? NSApp.windows.first(where: { $0.isVisible && !($0 is NSPanel) }) {
+            alert.beginSheetModal(for: window)
+        } else {
+            alert.runModal()
+        }
+    }
+
+    // MARK: Dropping
+
+    /// A folder dropped on the grid opens; sounds dropped while a collection is shown are added to it.
+    func handleDrop(_ urls: [URL]) -> Bool {
+        if let folder = urls.first(where: { (try? $0.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true }) {
+            open(folder)
+            return true
+        }
+        if case .collection(let id) = source {
+            return addToCollection(urls, id)
+        }
+        return false
     }
 
     func play(_ file: AudioFile) {
         player.play(file)
+    }
+
+    /// The sound shown after `file` in the grid, skipping collapsed sections and search misses.
+    private func file(after file: AudioFile) -> AudioFile? {
+        let files = sections.flatMap(\.files)
+        guard let index = files.firstIndex(where: { $0.id == file.id }), index + 1 < files.count else { return nil }
+        return files[index + 1]
     }
 
     /// Space bar: stops the selected sound if it's playing, otherwise plays the first selected sound.
@@ -685,7 +905,10 @@ final class AppModel {
         guard let value = UserDefaults.standard.string(forKey: "lastSource"),
               let source = BrowseSource(storageKey: value)
         else { return nil }
-        if case .folder(let id) = source, library.folder(id: id) == nil { return nil }
-        return source
+        switch source {
+        case .folder(let id) where library.folder(id: id) == nil: return nil
+        case .collection(let id) where library.collection(id: id) == nil: return nil
+        default: return source
+        }
     }
 }

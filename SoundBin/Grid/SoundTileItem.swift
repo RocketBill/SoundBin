@@ -27,12 +27,13 @@ final class SoundTileItem: NSCollectionViewItem {
     }
 
     /// Pass `artworks` as nil when artwork display is turned off.
-    func configure(with file: AudioFile, isFavourite: Bool,
+    func configure(with file: AudioFile, isFavourite: Bool, labels: Set<SoundLabel>,
                    waveforms: BackgroundLoader<Waveform>, artworks: BackgroundLoader<Artwork>?) {
         let isNewFile = self.file != file
         self.file = file
         tile.show(file)
         tile.isFavourite = isFavourite
+        tile.labels = labels
         if isNewFile || tile.waveformView.waveform == nil {
             loadWaveform(for: file, from: waveforms)
         }
@@ -123,6 +124,7 @@ final class SoundTileView: NSView {
     private let detailLabel = NSTextField(labelWithString: "")
     private let playingIcon = NSImageView()
     private let starIcon = NSImageView()
+    private let labelDots = LabelDotsView()
     private var showsPlayingIcon = false
     private var isAnimatingIcon = false
 
@@ -136,6 +138,15 @@ final class SoundTileView: NSView {
         }
     }
     var isFavourite = false { didSet { if isFavourite != oldValue { updateStar() } } }
+    var labels: Set<SoundLabel> {
+        get { labelDots.labels }
+        set {
+            guard newValue != labelDots.labels else { return }
+            labelDots.labels = newValue
+            needsLayout = true
+            needsDisplay = true
+        }
+    }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -164,7 +175,7 @@ final class SoundTileView: NSView {
         starIcon.symbolConfiguration = .init(pointSize: 11, weight: .semibold)
         starIcon.isHidden = true
 
-        for view in [artworkView, waveformView, nameLabel, detailLabel, playingIcon, starIcon] {
+        for view in [artworkView, waveformView, nameLabel, detailLabel, playingIcon, starIcon, labelDots] {
             addSubview(view)
         }
     }
@@ -186,7 +197,6 @@ final class SoundTileView: NSView {
     func show(_ file: AudioFile) {
         nameLabel.stringValue = file.displayName
         detailLabel.stringValue = file.summary
-        toolTip = file.folder.isEmpty ? file.url.lastPathComponent : "\(file.folder)/\(file.url.lastPathComponent)"
         setAccessibilityElement(true)
         setAccessibilityRole(.button)
         setAccessibilityLabel("\(file.displayName), \(Format.duration(file.duration)), \(file.formatName)")
@@ -276,17 +286,34 @@ final class SoundTileView: NSView {
             playingIcon.frame = NSRect(x: nameX, y: textTop + 1, width: 16, height: 15)
             nameX += 18
         }
-        nameLabel.frame = NSRect(x: nameX, y: textTop, width: bounds.width - nameX - padding, height: 17)
+        // Label dots follow the name, Finder style; a long name gives way so they stay visible.
+        let dotsWidth = labelDots.intrinsicContentSize.width
+        let nameRoom = bounds.width - nameX - padding - (dotsWidth > 0 ? dotsWidth + 4 : 0)
+        let nameWidth = min(ceil(nameLabel.attributedStringValue.size().width) + 4, max(0, nameRoom))
+        nameLabel.frame = NSRect(x: nameX, y: textTop, width: nameWidth, height: 17)
+        labelDots.frame = NSRect(x: nameLabel.frame.maxX + 2, y: textTop + 2.5, width: dotsWidth, height: 12)
         detailLabel.frame = NSRect(x: padding + 1, y: textTop + 18, width: width - 1, height: 15)
     }
 
     override func updateLayer() {
         let emphasized = (superview as? SoundCollectionView)?.isEmphasized ?? true
+        // A labelled tile is washed in its first label's colour, and keeps that colour when selected so
+        // the selection ring is what changes.
+        let labelColor = labels.min { $0.rawValue < $1.rawValue }?.color
         if isSelected || isHighlighted {
             let accent = emphasized ? NSColor.controlAccentColor : NSColor.unemphasizedSelectedContentBackgroundColor
-            layer?.backgroundColor = accent.withAlphaComponent(emphasized ? 0.22 : 0.9).cgColor
-            layer?.borderColor = (emphasized ? NSColor.controlAccentColor : .clear).cgColor
-            layer?.borderWidth = emphasized ? 2 : 0
+            if let labelColor {
+                layer?.backgroundColor = labelColor.withAlphaComponent(0.3).cgColor
+                layer?.borderColor = (emphasized ? accent : NSColor.secondaryLabelColor).cgColor
+                layer?.borderWidth = 2
+            } else {
+                layer?.backgroundColor = accent.withAlphaComponent(emphasized ? 0.22 : 0.9).cgColor
+                layer?.borderColor = (emphasized ? NSColor.controlAccentColor : .clear).cgColor
+                layer?.borderWidth = emphasized ? 2 : 0
+            }
+        } else if let labelColor {
+            layer?.backgroundColor = labelColor.withAlphaComponent(isHovered ? 0.26 : 0.18).cgColor
+            layer?.borderWidth = 0
         } else {
             layer?.backgroundColor = (isHovered ? Palette.tileHover : Palette.tile).cgColor
             layer?.borderWidth = 0
@@ -309,6 +336,52 @@ final class SoundTileView: NSView {
     override func mouseExited(with event: NSEvent) {
         guard isHovered else { return }
         (superview as? SoundCollectionView)?.setHovered(nil)
+    }
+}
+
+// MARK: - Label dots
+
+/// Overlapping coloured dots for a sound's labels, each ringed in the tile colour so they read as separate.
+final class LabelDotsView: NSView {
+    static let diameter: CGFloat = 12
+    static let step: CGFloat = 7
+
+    var labels: Set<SoundLabel> = [] {
+        didSet {
+            guard labels != oldValue else { return }
+            ordered = labels.sorted { $0.rawValue < $1.rawValue }
+            isHidden = labels.isEmpty
+            invalidateIntrinsicContentSize()
+            needsDisplay = true
+        }
+    }
+
+    private var ordered: [SoundLabel] = []
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        isHidden = true
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override var isFlipped: Bool { true }
+
+    override var intrinsicContentSize: NSSize {
+        guard !ordered.isEmpty else { return .zero }
+        return NSSize(width: Self.diameter + Self.step * CGFloat(ordered.count - 1), height: Self.diameter)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        // The leftmost dot sits on top, as Finder stacks tags, so draw right to left.
+        for (index, label) in ordered.enumerated().reversed() {
+            let rect = NSRect(x: Self.step * CGFloat(index), y: 0, width: Self.diameter, height: Self.diameter)
+            NSColor.windowBackgroundColor.setFill()
+            NSBezierPath(ovalIn: rect).fill()
+            label.color.setFill()
+            NSBezierPath(ovalIn: rect.insetBy(dx: 1.5, dy: 1.5)).fill()
+        }
     }
 }
 

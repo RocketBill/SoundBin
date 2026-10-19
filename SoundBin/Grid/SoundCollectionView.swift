@@ -14,10 +14,12 @@ protocol SoundCollectionViewDelegate: AnyObject {
     func soundCollectionViewStop(_ view: SoundCollectionView)
     func soundCollectionViewToggleFavourite(_ view: SoundCollectionView)
     func soundCollectionViewCopy(_ view: SoundCollectionView)
+    /// Delete key. Return false if there's nothing to delete, so the key beeps.
+    func soundCollectionViewDelete(_ view: SoundCollectionView) -> Bool
 }
 
 /// Adds sample-browser keyboard and mouse behaviour on top of NSCollectionView:
-/// arrows move and audition, Space plays/stops, "." stars (as in Photos), Esc stops.
+/// arrows move and audition, Space plays/stops, "." stars (as in Photos), Esc stops, Delete removes from a collection.
 final class SoundCollectionView: NSCollectionView {
     weak var soundDelegate: SoundCollectionViewDelegate?
 
@@ -131,6 +133,8 @@ final class SoundCollectionView: NSCollectionView {
         case .carriageReturn, .enter:
             soundDelegate?.soundCollectionViewPlaySelection(self)
             return
+        case .delete, .deleteForward:
+            if soundDelegate?.soundCollectionViewDelete(self) == true { return }
         default: break
         }
 

@@ -59,6 +59,8 @@ final class SoundGridController: NSObject, NSCollectionViewDelegate, SoundCollec
     /// Where keyboard movement continues from; the most recently clicked or moved-to tile.
     private var cursor: IndexPath?
     private var playback = PlaybackSnapshot()
+    /// The sound the selection last followed, so the highlight moves once per new sound rather than every tick.
+    private var followedURL: URL?
     private var observers: [Task<Void, Never>] = []
 
     private static let sideInset: CGFloat = 20
@@ -104,7 +106,7 @@ final class SoundGridController: NSObject, NSCollectionViewDelegate, SoundCollec
         scrollView.automaticallyAdjustsContentInsets = true
 
         observePlayer()
-        observeFavourites()
+        observeMarks()
     }
 
     func invalidate() {
@@ -248,7 +250,7 @@ final class SoundGridController: NSObject, NSCollectionViewDelegate, SoundCollec
     // MARK: Cells
 
     private func configure(_ item: SoundTileItem, with file: AudioFile) {
-        item.configure(with: file, isFavourite: model.isFavourite(file), waveforms: model.waveforms,
+        item.configure(with: file, isFavourite: model.isFavourite(file), labels: model.labels(of: file), waveforms: model.waveforms,
                        artworks: showsArtwork ? model.artworks : nil)
         if file.url == playback.url {
             item.setPlayback(progress: playback.progress, isPlaying: playback.isPlaying)
@@ -299,11 +301,12 @@ final class SoundGridController: NSObject, NSCollectionViewDelegate, SoundCollec
         })
     }
 
-    private func observeFavourites() {
+    /// Favourite stars and label dots change without the files changing, so visible tiles are updated in place.
+    private func observeMarks() {
         let library = model.library
         observers.append(Task { [weak self] in
-            for await _ in Observations({ library.favouritePaths }) {
-                self?.refreshFavourites()
+            for await _ in Observations({ (library.favouritePaths, library.fileLabels) }) {
+                self?.refreshMarks()
             }
         })
     }
@@ -320,12 +323,28 @@ final class SoundGridController: NSObject, NSCollectionViewDelegate, SoundCollec
         if let url = shown.url {
             tile(for: url)?.setPlayback(progress: shown.progress, isPlaying: shown.isPlaying)
         }
+
+        if let url = snapshot.url, url != followedURL {
+            followedURL = url
+            selectPlaying(url)
+        }
     }
 
-    private func refreshFavourites() {
+    /// Moves the highlight to a sound that started playing without being selected (Play Next, for one),
+    /// leaving the selection alone when the sound is already part of it.
+    private func selectPlaying(_ url: URL) {
+        guard !model.selection.contains(url), let indexPath = indexPaths[url] else { return }
+        collectionView.selectionIndexPaths = [indexPath]
+        cursor = indexPath
+        syncSelection()
+        scrollToReveal(indexPath)
+    }
+
+    private func refreshMarks() {
         for case let item as SoundTileItem in collectionView.visibleItems() {
             if let file = item.file {
                 item.tile.isFavourite = model.isFavourite(file)
+                item.tile.labels = model.labels(of: file)
             }
         }
     }
@@ -413,6 +432,12 @@ final class SoundGridController: NSObject, NSCollectionViewDelegate, SoundCollec
                                     symbol: allFavourites ? "star.slash" : "star") { [model] in
             model.toggleFavourite(targets)
         })
+        menu.addItem(collectionMenuItem(for: targets))
+        if case .collection = model.source {
+            menu.addItem(ActionMenuItem("Remove from Collection", symbol: "minus.circle") { [model] in
+                model.removeFromCollection(targets)
+            })
+        }
         menu.addItem(.separator())
         menu.addItem(ActionMenuItem("Show in Finder", symbol: "folder") { [model] in
             model.revealInFinder(targets)
@@ -420,7 +445,42 @@ final class SoundGridController: NSObject, NSCollectionViewDelegate, SoundCollec
         menu.addItem(ActionMenuItem(targets.count > 1 ? "Copy \(targets.count) Files" : "Copy", symbol: "doc.on.doc") { [model] in
             model.copyToPasteboard(targets)
         })
+        menu.addItem(.separator())
+        menu.addItem(labelMenuItem(for: targets))
         return menu
+    }
+
+    private func labelMenuItem(for targets: [AudioFile]) -> NSMenuItem {
+        let applied = targets.map(model.labels(of:))
+        var states: [SoundLabel: LabelMenuView.State] = [:]
+        for label in SoundLabel.allCases {
+            let count = applied.count { $0.contains(label) }
+            states[label] = count == 0 ? .off : (count == targets.count ? .on : .mixed)
+        }
+        let item = NSMenuItem()
+        item.view = LabelMenuView(states: states, name: { [model] in model.library.name(of: $0) }) { [model] label in
+            model.toggleLabel(label, for: targets)
+        }
+        return item
+    }
+
+    /// "Add to Collection" with a submenu of every collection besides the one being shown.
+    private func collectionMenuItem(for targets: [AudioFile]) -> NSMenuItem {
+        let urls = targets.map(\.url)
+        let submenu = NSMenu()
+        for collection in model.library.collections where model.source != .collection(collection.id) {
+            submenu.addItem(ActionMenuItem(collection.name, symbol: "rectangle.stack") { [model] in
+                model.addToCollection(urls, collection.id)
+            })
+        }
+        if !submenu.items.isEmpty { submenu.addItem(.separator()) }
+        submenu.addItem(ActionMenuItem("New Collection with Selection", symbol: "rectangle.stack.badge.plus") { [model] in
+            model.newCollection(with: targets)
+        })
+        let item = NSMenuItem(title: "Add to Collection", action: nil, keyEquivalent: "")
+        item.image = NSImage(systemSymbolName: "rectangle.stack.badge.plus", accessibilityDescription: nil)
+        item.submenu = submenu
+        return item
     }
 
     func soundCollectionViewTogglePlayback(_ view: SoundCollectionView) {
@@ -441,6 +501,12 @@ final class SoundGridController: NSObject, NSCollectionViewDelegate, SoundCollec
 
     func soundCollectionViewCopy(_ view: SoundCollectionView) {
         model.copyToPasteboard(model.selectedFiles)
+    }
+
+    func soundCollectionViewDelete(_ view: SoundCollectionView) -> Bool {
+        guard case .collection = model.source, !model.selection.isEmpty else { return false }
+        model.removeFromCollection(model.selectedFiles)
+        return true
     }
 
     // MARK: Keyboard movement
