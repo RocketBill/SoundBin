@@ -1,27 +1,60 @@
-# SoundBin
+<p align="center">
+  <img src="Docs/icon.png" width="128" height="128" alt="SoundBin app icon">
+</p>
 
-A fast, native sample browser for macOS. Point it at a folder of sounds and see every file as a waveform tile. Click one to hear it.
+<h1 align="center">SoundBin</h1>
 
-SoundBin is built for producers and sound designers with big sample libraries: thousands of files, nested folders, and no patience for opening them one at a time.
+<p align="center">
+  A fast, native sample browser for macOS.<br>
+  Point it at a folder of sounds and see every file as a waveform. Click one to hear it.
+</p>
+
+<p align="center">
+  <a href="https://github.com/RocketBill/SoundBin/releases/latest">Download</a> ·
+  macOS 26 or later ·
+  Free and open source
+</p>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="Docs/screenshot-dark.png">
+    <img src="Docs/screenshot-light.png" alt="The SoundBin window: a sidebar of favourites, collections and folders beside a grid of waveform tiles grouped by subfolder, with a drum loop playing in the transport bar">
+  </picture>
+</p>
+
+SoundBin is for producers and sound designers with big sample libraries: thousands of files, nested folders, and no patience for opening them one at a time.
 
 ## Features
 
+### Browse
+
 - **Waveform grid.** Every sound is a tile showing its waveform, name, length and format. Drag the toolbar slider or press ⌘+ / ⌘− to resize the tiles.
-- **Instant playback.** Click a tile to play it, or move through them with the arrow keys and hear each one as you go. Space plays or stops, and ⌘L toggles looping.
-- **Subfolders.** Include subfolders (on by default) to see a whole library at once, grouped into sections by folder.
-- **Favourites.** Star the sounds you keep coming back to and find them all in one place, wherever they live on disk.
-- **Search and sort.** Filter by name, and sort by name, duration, date modified, size or format.
+- **Subfolders.** Include subfolders (on by default) to see a whole library at once, grouped into collapsible sections by folder.
+- **Search, sort and filter.** Filter by name or colour label, and sort by name, duration, date modified, size or format.
 - **Artwork.** MP3s, M4As and other files with embedded cover art can show it on their tiles.
-- **Drag out.** Drag tiles straight into your DAW, Finder or anywhere else that accepts audio files.
 - **Stays up to date.** Folders are watched, so new and deleted files show up automatically.
 - **Quick to reopen.** Waveforms and artwork are cached, so folders open instantly next time.
-- **Automatic updates.** SoundBin checks for new versions daily and offers to install them. You can turn this off, or have updates install themselves, in Settings.
+
+### Listen
+
+- **Instant playback.** Click a tile to play it, or move through them with the arrow keys and hear each one as you go. Space plays or stops.
+- **Loop and Play Next.** Press ⌘L to loop a sound, or turn on Play Next Automatically to carry on to the next sound when one ends.
+- **Transport bar.** See where you are in the current sound, and click its waveform to jump around.
+
+### Organise
+
+- **Favourites.** Star the sounds you keep coming back to (or press Full Stop) and find them all in one place, wherever they live on disk.
+- **Collections.** Group sounds from any of your folders into collections, such as everything for one track. When you're ready, make a collection into a real folder on disk.
+- **Colour labels.** Tag sounds with Finder-style colours using ⌥⌘1 to ⌥⌘7, and name each colour after how you sort, such as Kicks or Vocals.
+- **Drag out.** Drag tiles straight into your DAW, Finder or anywhere else that accepts audio files.
 
 SoundBin plays anything macOS can decode, including WAV, AIFF, MP3, M4A/AAC, ALAC, FLAC and CAF.
 
-## Requirements
+## Installing
 
-- macOS 26 or later
+Download the latest version from [Releases](https://github.com/RocketBill/SoundBin/releases/latest), unzip it and drag SoundBin to your Applications folder.
+
+SoundBin checks for new versions daily and offers to install them. You can turn this off, or have updates install themselves, in Settings.
 
 ## Building from source
 
@@ -41,7 +74,7 @@ The only dependency is [Sparkle](https://sparkle-project.org), for updates, whic
 
 ## Privacy
 
-SoundBin runs in the App Sandbox with read-only access to the folders you choose. It never modifies, moves or uploads your files. Its only network connection is the daily update check against this repository's GitHub releases, which you can turn off in Settings. The app itself has no network access: Sparkle's sandboxed helper does the downloading.
+SoundBin runs in the App Sandbox. It only reads the folders you choose, and only writes to disk when you ask it to, such as making a collection into a new folder. It never modifies, moves or uploads your sounds. Its only network connection is the daily update check against this repository's GitHub releases, which you can turn off in Settings. The app itself has no network access: Sparkle's sandboxed helper does the downloading.
 
 ## Licence
 
