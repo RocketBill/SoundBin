@@ -22,7 +22,8 @@ struct BrowserView: View {
                     showsArtwork: model.showsArtwork,
                     bottomInset: hasTransport ? Self.transportClearance : 0
                 )
-                .ignoresSafeArea()
+                // Scroll under the toolbar's glass, but start beside the sidebar rather than beneath it.
+                .ignoresSafeArea(edges: .vertical)
             }
             placeholder
         }

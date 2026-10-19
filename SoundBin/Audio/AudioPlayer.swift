@@ -31,6 +31,9 @@ final class AudioPlayer {
     @ObservationIgnored private var connectedFormat: AVAudioFormat?
     /// Frame the current segment was scheduled from; the node's own clock restarts at zero for each segment.
     @ObservationIgnored private var segmentStartFrame: AVAudioFramePosition = 0
+    /// Chunks of the current segment queued on the node that haven't finished playing yet.
+    @ObservationIgnored private var chunksInFlight = 0
+    @ObservationIgnored private var reachedEndOfFile = false
     /// Bumped whenever playback is interrupted, so completion callbacks from old segments are ignored.
     @ObservationIgnored private var generation = 0
     @ObservationIgnored private var ticker: Timer?
@@ -38,6 +41,9 @@ final class AudioPlayer {
 
     private static let volumeKey = "playerVolume"
     private static let loopingKey = "playerLooping"
+    /// Playback decodes the file in chunks of this length, keeping a few queued ahead of the playhead.
+    private static let chunkDuration: TimeInterval = 0.5
+    private static let chunksAhead = 4
 
     init() {
         engine.attach(playerNode)
@@ -137,8 +143,7 @@ final class AudioPlayer {
         guard let audioFile else { return }
         let sampleRate = audioFile.processingFormat.sampleRate
         let startFrame = min(AVAudioFramePosition(time * sampleRate), max(0, audioFile.length - 1))
-        let frameCount = AVAudioFrameCount(max(0, audioFile.length - startFrame))
-        guard frameCount > 0 else { return }
+        guard audioFile.length - startFrame > 0 else { return }
 
         do {
             if !engine.isRunning { try engine.start() }
@@ -148,13 +153,19 @@ final class AudioPlayer {
         }
 
         generation += 1
-        let scheduledGeneration = generation
         segmentStartFrame = startFrame
-        playerNode.scheduleSegment(
-            audioFile, startingFrame: startFrame, frameCount: frameCount, at: nil,
-            completionCallbackType: .dataPlayedBack
-        ) { @Sendable [weak self] _ in
-            Task { @MainActor in self?.segmentFinished(scheduledGeneration) }
+        audioFile.framePosition = startFrame
+        chunksInFlight = 0
+        reachedEndOfFile = false
+        for _ in 0..<Self.chunksAhead {
+            scheduleNextChunk()
+        }
+        guard chunksInFlight > 0 else {
+            stop()
+            if startFrame == 0, let currentFile {
+                lastError = "Couldn’t play “\(currentFile.displayName)”."
+            }
+            return
         }
         playerNode.play()
         currentTime = Double(startFrame) / sampleRate
@@ -167,9 +178,40 @@ final class AudioPlayer {
         playerNode.stop()
     }
 
-    private func segmentFinished(_ finishedGeneration: Int) {
+    /// Decodes the next chunk and queues it on the node. Scheduling the file on the node directly
+    /// (`scheduleSegment`/`scheduleFile`) plays nothing at all for files whose header overstates their
+    /// length, which is common with Ogg Vorbis; reading it ourselves just stops at the real end.
+    private func scheduleNextChunk() {
+        guard !reachedEndOfFile, let audioFile else { return }
+        let format = audioFile.processingFormat
+        guard let buffer = AVAudioPCMBuffer(
+            pcmFormat: format, frameCapacity: AVAudioFrameCount(format.sampleRate * Self.chunkDuration)
+        ) else { return }
+        do {
+            try audioFile.read(into: buffer)
+        } catch {
+            buffer.frameLength = 0
+        }
+        guard buffer.frameLength > 0 else {
+            reachedEndOfFile = true
+            return
+        }
+
+        let scheduledGeneration = generation
+        chunksInFlight += 1
+        playerNode.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { @Sendable [weak self] _ in
+            Task { @MainActor in self?.chunkFinished(scheduledGeneration) }
+        }
+    }
+
+    private func chunkFinished(_ finishedGeneration: Int) {
         guard finishedGeneration == generation, isPlaying else { return }
+        chunksInFlight -= 1
+        scheduleNextChunk()
+        guard chunksInFlight == 0 else { return }
         if isLooping {
+            // Stopping the node restarts its clock, which `livePosition()` measures from.
+            interruptSegment()
             startPlayback(at: 0)
         } else {
             stop()

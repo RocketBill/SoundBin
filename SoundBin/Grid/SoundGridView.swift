@@ -100,6 +100,7 @@ final class SoundGridController: NSObject, NSCollectionViewDelegate, SoundCollec
         scrollView.drawsBackground = false
         scrollView.hasVerticalScroller = true
         scrollView.autohidesScrollers = true
+        scrollView.horizontalScrollElasticity = .none
         scrollView.automaticallyAdjustsContentInsets = true
 
         observePlayer()
@@ -191,7 +192,7 @@ final class SoundGridController: NSObject, NSCollectionViewDelegate, SoundCollec
 
     private func scrollToTop() {
         let clipView = scrollView.contentView
-        clipView.scroll(to: NSPoint(x: 0, y: -scrollView.contentInsets.top))
+        clipView.scroll(to: NSPoint(x: -scrollView.contentInsets.left, y: -scrollView.contentInsets.top))
         scrollView.reflectScrolledClipView(clipView)
     }
 

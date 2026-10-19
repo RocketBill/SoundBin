@@ -15,6 +15,7 @@ SoundBin is built for producers and sound designers with big sample libraries: t
 - **Drag out.** Drag tiles straight into your DAW, Finder or anywhere else that accepts audio files.
 - **Stays up to date.** Folders are watched, so new and deleted files show up automatically.
 - **Quick to reopen.** Waveforms and artwork are cached, so folders open instantly next time.
+- **Automatic updates.** SoundBin checks for new versions daily and offers to install them. You can turn this off, or have updates install themselves, in Settings.
 
 SoundBin plays anything macOS can decode, including WAV, AIFF, MP3, M4A/AAC, ALAC, FLAC and CAF.
 
@@ -32,11 +33,15 @@ SoundBin plays anything macOS can decode, including WAV, AIFF, MP3, M4A/AAC, ALA
 3. In the SoundBin target's **Signing & Capabilities** tab, choose your own team.
 4. Build and run (⌘R).
 
-SoundBin has no third-party dependencies.
+The only dependency is [Sparkle](https://sparkle-project.org), for updates, which Xcode fetches automatically through Swift Package Manager.
+
+## Releasing
+
+`Tools/release.sh` builds a release, signs it with Developer ID, notarizes it and publishes it as a GitHub release, along with the signed Sparkle feed that existing copies check for updates. The setup it needs, and how to bump versions, is described at the top of the script.
 
 ## Privacy
 
-SoundBin runs in the App Sandbox with read-only access to the folders you choose. It never modifies, moves or uploads your files, and it makes no network connections.
+SoundBin runs in the App Sandbox with read-only access to the folders you choose. It never modifies, moves or uploads your files. Its only network connection is the daily update check against this repository's GitHub releases, which you can turn off in Settings. The app itself has no network access: Sparkle's sandboxed helper does the downloading.
 
 ## Licence
 

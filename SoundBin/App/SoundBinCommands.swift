@@ -2,8 +2,14 @@ import SwiftUI
 
 struct SoundBinCommands: Commands {
     let model: AppModel
+    let updater: Updater
 
     var body: some Commands {
+        CommandGroup(after: .appInfo) {
+            Button("Check for Updates…") { updater.checkForUpdates() }
+                .disabled(!updater.canCheckForUpdates)
+        }
+
         CommandGroup(replacing: .newItem) {
             Button("Open Folder…") { model.presentOpenPanel() }
                 .keyboardShortcut("o")

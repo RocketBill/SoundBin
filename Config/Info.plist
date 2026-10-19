@@ -17,5 +17,27 @@
 			</array>
 		</dict>
 	</array>
+
+	<!-- Sparkle updates. The feed and key come from build settings (SPARKLE_FEED_URL, SPARKLE_PUBLIC_KEY). -->
+	<key>SUFeedURL</key>
+	<string>$(SPARKLE_FEED_URL)</string>
+	<key>SUPublicEDKey</key>
+	<string>$(SPARKLE_PUBLIC_KEY)</string>
+	<!-- Check daily without first asking permission; users can turn this off in Settings. -->
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUScheduledCheckInterval</key>
+	<integer>86400</integer>
+	<!-- Only accept updates and feeds signed with our EdDSA key, checked before anything is unpacked. -->
+	<key>SUVerifyUpdateBeforeExtraction</key>
+	<true/>
+	<key>SURequireSignedFeed</key>
+	<true/>
+	<!-- The app is sandboxed: Sparkle's XPC helpers install the update and do the downloading,
+	     so SoundBin itself needs no network access. -->
+	<key>SUEnableInstallerLauncherService</key>
+	<true/>
+	<key>SUEnableDownloaderService</key>
+	<true/>
 </dict>
 </plist>
