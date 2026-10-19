@@ -1,10 +1,11 @@
 #!/bin/zsh
 # Builds a notarized SoundBin release and publishes it, with its Sparkle update feed, as a GitHub release.
 #
-#   Tools/release.sh [release-notes.md]
+#   Tools/release.sh [--dry-run] [release-notes.md]
 #
 # The Markdown release notes appear in Sparkle's update window and on the GitHub release page.
-# Nothing is published until you confirm at the end.
+# Nothing is published until you confirm at the end. --dry-run does everything except publishing,
+# including signing and notarizing, and works with uncommitted changes, to test a release first.
 #
 # Before each release, bump both versions in the project, then commit and push:
 #   MARKETING_VERSION        what users see, e.g. 1.1
@@ -29,6 +30,11 @@ cd "${0:A:h}/.."
 REPO=RocketBill/SoundBin
 NOTARY_PROFILE=SoundBin
 OUT=build/release
+DRY_RUN=false
+if [[ ${1:-} == --dry-run ]]; then
+    DRY_RUN=true
+    shift
+fi
 NOTES=${1:-}
 
 fail() { print -u2 "\nerror: $1"; exit 1 }
@@ -47,9 +53,13 @@ TAG=v$VERSION
 print "SoundBin $VERSION ($BUILD_NUMBER)"
 
 step "Checking the repository"
-[[ -z $(git status --porcelain) ]] || fail "There are uncommitted changes. Commit them first, so the release matches a commit."
-git fetch --quiet origin
-[[ $(git rev-parse HEAD) == $(git rev-parse '@{u}') ]] || fail "This branch isn't in step with origin. Push or pull first."
+if $DRY_RUN; then
+    print "Dry run: uncommitted changes are allowed, and nothing will be published."
+else
+    [[ -z $(git status --porcelain) ]] || fail "There are uncommitted changes. Commit them first, so the release matches a commit."
+    git fetch --quiet origin
+    [[ $(git rev-parse HEAD) == $(git rev-parse '@{u}') ]] || fail "This branch isn't in step with origin. Push or pull first."
+fi
 if gh release view $TAG --repo $REPO >/dev/null 2>&1; then
     fail "$TAG has already been released. Bump MARKETING_VERSION and CURRENT_PROJECT_VERSION."
 fi
@@ -85,6 +95,7 @@ fi
 
 step "Archiving"
 xcodebuild archive -project SoundBin.xcodeproj -scheme SoundBin -configuration Release \
+    -destination 'generic/platform=macOS' \
     -archivePath $OUT/SoundBin.xcarchive -derivedDataPath $OUT/DerivedData -quiet
 
 step "Signing with Developer ID"
@@ -92,10 +103,12 @@ xcodebuild -exportArchive -archivePath $OUT/SoundBin.xcarchive \
     -exportOptionsPlist Tools/ExportOptions.plist -exportPath $OUT/export -quiet
 APP=$OUT/export/SoundBin.app
 codesign --verify --deep --strict $APP
-# The sandboxed app relies on Sparkle's downloader for network access, so it must keep its entitlement.
-codesign -d --entitlements - --xml $APP/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices/Downloader.xpc 2>/dev/null \
-    | grep -q com.apple.security.network.client \
-    || fail "Sparkle's downloader lost its network entitlement during signing, so updates couldn't download."
+# The sandboxed app relies on Sparkle's downloader for network access. Sparkle ships it unsandboxed;
+# if it were ever signed with a sandbox, it would also need the network entitlement.
+downloader=$(codesign -d --entitlements - --xml $APP/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices/Downloader.xpc 2>/dev/null)
+if [[ $downloader == *com.apple.security.app-sandbox* && $downloader != *com.apple.security.network.client* ]]; then
+    fail "Sparkle's downloader is sandboxed without network access, so updates couldn't download."
+fi
 
 step "Notarizing (usually a few minutes)"
 ditto -c -k --keepParent $APP $OUT/notarize.zip
@@ -123,6 +136,11 @@ $SPARKLE_BIN/generate_appcast \
 # generate_appcast only warns when it can't sign an update, so make sure it did.
 grep -q "SoundBin-$VERSION.zip\"[^>]*sparkle:edSignature=" $OUT/updates/appcast.xml \
     || fail "The new update in appcast.xml isn't signed, so Sparkle would refuse to install it."
+
+if $DRY_RUN; then
+    print "\nDry run finished. The notarized app and signed feed for $VERSION ($BUILD_NUMBER) are in $OUT."
+    exit 0
+fi
 
 step "Ready to publish SoundBin $VERSION ($BUILD_NUMBER)"
 print "This creates the public GitHub release $TAG, and every copy of SoundBin will be offered it."

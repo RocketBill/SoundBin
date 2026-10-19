@@ -11,8 +11,9 @@ import SwiftUI
 /// Script commands: open <path>, source favourites, wait <seconds>, snap <name>, key <name|char>,
 /// click <section> <item>, search <text>, tile <width>, subfolders on|off, collapse <section>,
 /// sort <key> [desc], loop|playnext on|off, label <0-6> <name>, labelfilter <0,3|none>, labelmenu, hitrow <y>, drag <tile width>, updates background|autodownload on|off|dump,
-/// selectall, collection new|show|add|remove|rename|export|delete <name>[|<new name or folder path>], quit.
-/// Snapshots are written to the app container's tmp folder.
+/// selectall, collection new|show|add|remove|rename|export|delete <name>[|<new name or folder path>],
+/// window <width>x<height> [<x> <y>], shot <name>, quit.
+/// Snapshots are written to the app container's tmp folder. "shot" captures the real window, glass and shadow included.
 enum DebugLaunchOptions {
     static func apply(to model: AppModel, updater: Updater) {
         let defaults = UserDefaults.standard
@@ -77,6 +78,19 @@ enum DebugLaunchOptions {
                 }
             case "snap":
                 snapshot(named: argument)
+            case "shot":
+                windowShot(named: argument)
+            case "window":
+                // window 1280x820 centres the window; window 1280x820 300 80 puts its origin at (300, 80).
+                let parts = argument.split(separator: " ")
+                let size = (parts.first ?? "").split(separator: "x").compactMap { Double($0) }
+                let origin = parts.dropFirst().compactMap { Double($0) }
+                if size.count == 2, let window = mainWindow {
+                    let visible = window.screen?.visibleFrame ?? .zero
+                    let x = origin.count == 2 ? origin[0] : visible.midX - size[0] / 2
+                    let y = origin.count == 2 ? origin[1] : visible.midY - size[1] / 2
+                    window.setFrame(NSRect(x: x, y: y, width: size[0], height: size[1]), display: true)
+                }
             case "key":
                 sendKey(argument)
             case "click":
@@ -222,6 +236,23 @@ enum DebugLaunchOptions {
             if runs.last?.name != String(name) { runs.append((x, String(name))) }
         }
         print("[hit] y \(y): " + runs.map { "\(Int($0.start)) \($0.name)" }.joined(separator: " | "))
+    }
+
+    /// Captures the main window as the window server draws it. An app may capture its own windows without
+    /// Screen Recording permission. CGWindowListCreateImage is hidden from the macOS 15+ SDK, so it's looked up at runtime.
+    private static func windowShot(named name: String) {
+        typealias CreateImage = @convention(c) (CGRect, UInt32, UInt32, UInt32) -> Unmanaged<CGImage>?
+        guard let window = mainWindow,
+              let symbol = dlsym(dlopen(nil, RTLD_NOW), "CGWindowListCreateImage") else { return }
+        let createImage = unsafeBitCast(symbol, to: CreateImage.self)
+        // kCGWindowListOptionIncludingWindow, kCGWindowImageBestResolution
+        guard let image = createImage(.null, 1 << 3, UInt32(window.windowNumber), 1 << 3)?.takeRetainedValue() else {
+            print("[script] window capture failed")
+            return
+        }
+        let url = URL(filePath: NSTemporaryDirectory()).appending(path: "\(name).png")
+        try? NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])?.write(to: url)
+        print("[script] wrote \(url.path)")
     }
 
     private static var mainWindow: NSWindow? {
