@@ -1,5 +1,6 @@
 #!/bin/zsh
 # Builds a notarized SoundBin release and publishes it, with its Sparkle update feed, as a GitHub release.
+# The release is a disk image with an Applications shortcut; people download it, and Sparkle updates from it.
 #
 #   Tools/release.sh [--dry-run] [release-notes.md]
 #
@@ -23,11 +24,15 @@
 #      (that path exists after the first run; any copy of Sparkle's generate_keys works).
 #
 # If macOS asks whether Sparkle's tools may use the signing key, choose Always Allow.
+#
+# The disk image's window (background and icon layout) comes from Tools/dmg. It's made with dmgbuild,
+# which the script installs into build/tools on first use, using the Python 3 that comes with Xcode.
 
 set -euo pipefail
 cd "${0:A:h}/.."
 
 REPO=RocketBill/SoundBin
+TEAM=KU39H5GRDS
 NOTARY_PROFILE=SoundBin
 OUT=build/release
 DRY_RUN=false
@@ -39,6 +44,17 @@ NOTES=${1:-}
 
 fail() { print -u2 "\nerror: $1"; exit 1 }
 step() { print "\n==> $1" }
+
+# Submits a file to Apple's notary service and waits for the verdict, printing Apple's log if it's rejected.
+notarize() {
+    local result notary_status
+    result=$(xcrun notarytool submit $1 --keychain-profile $NOTARY_PROFILE --wait --output-format json)
+    notary_status=$(print -r -- $result | plutil -extract status raw -o - -)
+    if [[ $notary_status != Accepted ]]; then
+        xcrun notarytool log $(print -r -- $result | plutil -extract id raw -o - -) --keychain-profile $NOTARY_PROFILE || true
+        fail "Notarizing ${1:t} finished with status '$notary_status'."
+    fi
+}
 
 [[ -z $NOTES || -f $NOTES ]] || fail "Release notes file not found: $NOTES"
 [[ -z $NOTES ]] || NOTES=${NOTES:A}
@@ -65,8 +81,8 @@ if gh release view $TAG --repo $REPO >/dev/null 2>&1; then
 fi
 
 step "Checking signing and notarization"
-security find-identity -v -p codesigning | grep -q "Developer ID Application" \
-    || fail "No Developer ID Application certificate. See the setup notes at the top of this script."
+IDENTITY=$(security find-identity -v -p codesigning | awk "/Developer ID Application/ && /\\($TEAM\\)/ { print \$2; exit }")
+[[ -n $IDENTITY ]] || fail "No Developer ID Application certificate for team $TEAM. See the setup notes at the top of this script."
 xcrun notarytool history --keychain-profile $NOTARY_PROFILE >/dev/null 2>&1 \
     || fail "No notarization credentials in the Keychain profile '$NOTARY_PROFILE'. See the setup notes."
 
@@ -110,22 +126,32 @@ if [[ $downloader == *com.apple.security.app-sandbox* && $downloader != *com.app
     fail "Sparkle's downloader is sandboxed without network access, so updates couldn't download."
 fi
 
-step "Notarizing (usually a few minutes)"
+step "Notarizing the app (usually a few minutes)"
+# Stapling the app as well as the disk image lets it pass Gatekeeper offline once it's copied out.
 ditto -c -k --keepParent $APP $OUT/notarize.zip
-result=$(xcrun notarytool submit $OUT/notarize.zip --keychain-profile $NOTARY_PROFILE --wait --output-format json)
-notary_status=$(print -r -- $result | plutil -extract status raw -o - -)
-if [[ $notary_status != Accepted ]]; then
-    submission=$(print -r -- $result | plutil -extract id raw -o - -)
-    xcrun notarytool log $submission --keychain-profile $NOTARY_PROFILE || true
-    fail "Notarization finished with status '$notary_status'."
-fi
+notarize $OUT/notarize.zip
 xcrun stapler staple $APP
 spctl --assess --type execute $APP || fail "Gatekeeper rejected the notarized app."
 
-step "Packaging"
-ZIP=$OUT/updates/SoundBin-$VERSION.zip
-ditto -c -k --sequesterRsrc --keepParent $APP $ZIP
+step "Making the disk image"
+# An app opened straight from a download runs from a temporary copy that Sparkle can't update.
+# The disk image's window shows people to drag SoundBin into Applications instead.
+[[ ! -e /Volumes/SoundBin ]] \
+    || fail "Eject the disk called SoundBin first. The new disk image is briefly mounted under that name while its window is laid out."
+DMGBUILD=build/tools/dmgbuild
+if [[ ! -x $DMGBUILD/bin/dmgbuild ]]; then
+    python3 -m venv $DMGBUILD
+    $DMGBUILD/bin/pip install --quiet --disable-pip-version-check dmgbuild==1.6.5
+fi
+DMG=$OUT/updates/SoundBin-$VERSION.dmg
+$DMGBUILD/bin/dmgbuild -s Tools/dmg/settings.py -D app=$APP SoundBin $DMG >/dev/null
+codesign --sign $IDENTITY --timestamp $DMG
 [[ -z $NOTES ]] || cp $NOTES $OUT/updates/SoundBin-$VERSION.md
+
+step "Notarizing the disk image"
+notarize $DMG
+xcrun stapler staple $DMG
+spctl --assess --type open --context context:primary-signature $DMG || fail "Gatekeeper rejected the disk image."
 
 step "Signing the update feed"
 $SPARKLE_BIN/generate_appcast \
@@ -134,7 +160,7 @@ $SPARKLE_BIN/generate_appcast \
     --link "https://github.com/$REPO" \
     $OUT/updates
 # generate_appcast only warns when it can't sign an update, so make sure it did.
-grep -q "SoundBin-$VERSION.zip\"[^>]*sparkle:edSignature=" $OUT/updates/appcast.xml \
+grep -q "SoundBin-$VERSION.dmg\"[^>]*sparkle:edSignature=" $OUT/updates/appcast.xml \
     || fail "The new update in appcast.xml isn't signed, so Sparkle would refuse to install it."
 
 if $DRY_RUN; then
@@ -152,7 +178,7 @@ print
 
 notes_args=(--generate-notes)
 [[ -z $NOTES ]] || notes_args=(--notes-file $NOTES)
-gh release create $TAG $ZIP $OUT/updates/appcast.xml \
+gh release create $TAG $DMG $OUT/updates/appcast.xml \
     --repo $REPO --target $(git rev-parse HEAD) --title "SoundBin $VERSION" $notes_args
 
 print "\nReleased $TAG: https://github.com/$REPO/releases/tag/$TAG"

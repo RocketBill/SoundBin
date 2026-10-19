@@ -131,7 +131,7 @@ enum DebugLaunchOptions {
                 updater.automaticallyDownloadsUpdates = argument.hasSuffix("on")
             case "updates" where argument == "dump":
                 let info = Bundle.main.infoDictionary ?? [:]
-                print("[updates] version \(info["CFBundleShortVersionString"] ?? "-") (\(info["CFBundleVersion"] ?? "-")) feed \(info["SUFeedURL"] ?? "-") canCheck \(updater.canCheckForUpdates) autoCheck \(updater.automaticallyChecksForUpdates) autoDownload \(updater.automaticallyDownloadsUpdates) allowsAutomatic \(updater.allowsAutomaticUpdates) lastCheck \(updater.lastUpdateCheckDate.map { "\($0)" } ?? "-")")
+                print("[updates] version \(info["CFBundleShortVersionString"] ?? "-") (\(info["CFBundleVersion"] ?? "-")) feed \(info["SUFeedURL"] ?? "-") canCheck \(updater.canCheckForUpdates) autoCheck \(updater.automaticallyChecksForUpdates) autoDownload \(updater.automaticallyDownloadsUpdates) allowsAutomatic \(updater.allowsAutomaticUpdates) lastCheck \(updater.lastUpdateCheckDate.map { "\($0)" } ?? "-") location \(InstallLocation.problem.map { "\($0)" } ?? "ok") at \(Bundle.main.bundleURL.path)")
             case "about":
                 AboutPanel.show()
                 try? await Task.sleep(for: .milliseconds(300))

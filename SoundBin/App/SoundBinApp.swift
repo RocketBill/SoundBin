@@ -44,6 +44,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         #if DEBUG
         DebugLaunchOptions.apply(to: model, updater: updater)
+        // Scripted runs report this in `updates dump` instead, since the alert would stop the script.
+        if UserDefaults.standard.string(forKey: "SBScript") != nil { return }
         #endif
+        // Say so straight away if SoundBin can't update from where it is, rather than failing quietly later.
+        if let problem = InstallLocation.problem {
+            DispatchQueue.main.async { InstallLocation.showAlert(for: problem) }
+        }
     }
 }

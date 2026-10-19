@@ -57,6 +57,11 @@ final class Updater {
 
     /// Checks now and shows Sparkle's window with the result, including "you're up to date".
     func checkForUpdates() {
+        // Sparkle refuses to update from these places; explain how to fix it instead of showing its error.
+        if let problem = InstallLocation.problem {
+            InstallLocation.showAlert(for: problem)
+            return
+        }
         controller.checkForUpdates(nil)
     }
 

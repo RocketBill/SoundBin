@@ -5,7 +5,7 @@
 <h1 align="center">SoundBin</h1>
 
 <p align="center">
-  A fast, native sample browser for macOS.<br>
+  A fast, native sound browser for macOS.<br>
   Point it at a folder of sounds and see every file as a waveform. Click one to hear it.
 </p>
 
@@ -21,8 +21,6 @@
     <img src="Docs/screenshot-light.png" alt="The SoundBin window: a sidebar of favourites, collections and folders beside a grid of waveform tiles grouped by subfolder, with a drum loop playing in the transport bar">
   </picture>
 </p>
-
-SoundBin is for producers and sound designers with big sample libraries: thousands of files, nested folders, and no patience for opening them one at a time.
 
 ## Features
 
@@ -52,7 +50,7 @@ SoundBin plays anything macOS can decode, including WAV, AIFF, MP3, M4A/AAC, ALA
 
 ## Installing
 
-Download the latest version from [Releases](https://github.com/RocketBill/SoundBin/releases/latest), unzip it and drag SoundBin to your Applications folder.
+Download the latest version from [Releases](https://github.com/RocketBill/SoundBin/releases/latest), open the disk image and drag SoundBin into your Applications folder. Open it from there: SoundBin can't update itself while it's running from the disk image or your Downloads folder.
 
 SoundBin checks for new versions daily and offers to install them. You can turn this off, or have updates install themselves, in Settings.
 
@@ -70,11 +68,11 @@ The only dependency is [Sparkle](https://sparkle-project.org), for updates, whic
 
 ## Releasing
 
-`Tools/release.sh` builds a release, signs it with Developer ID, notarizes it and publishes it as a GitHub release, along with the signed Sparkle feed that existing copies check for updates. The setup it needs, and how to bump versions, is described at the top of the script.
+`Tools/release.sh` builds a release, signs it with Developer ID, notarizes it and publishes it as a GitHub release: a disk image, plus the signed Sparkle feed that existing copies check for updates. Run it with `--dry-run` first to do everything except publishing. The setup it needs, and how to bump versions, is described at the top of the script.
 
 ## Privacy
 
-SoundBin runs in the App Sandbox. It only reads the folders you choose, and only writes to disk when you ask it to, such as making a collection into a new folder. It never modifies, moves or uploads your sounds. Its only network connection is the daily update check against this repository's GitHub releases, which you can turn off in Settings. The app itself has no network access: Sparkle's sandboxed helper does the downloading.
+SoundBin runs in the App Sandbox. It only reads the folders you choose, and only writes to disk when you ask it to, such as making a collection into a new folder. It never modifies, moves or uploads your sounds. Its only network connection is the daily update check against this repository's GitHub releases, which you can turn off in Settings. The app itself has no network access: a separate helper from Sparkle does the downloading.
 
 ## Licence
 
