@@ -17,15 +17,18 @@ nonisolated struct FileKey: Hashable, Sendable {
 /// A folder in the app's Caches directory holding one small file per `FileKey`.
 nonisolated struct CacheDirectory: Sendable {
     let url: URL
+    /// Part of every file name, so bumping it makes values computed the old way look missing.
+    let version: Int
 
-    init(_ name: String) {
+    init(_ name: String, version: Int = 1) {
         let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
         url = caches.appending(path: name, directoryHint: .isDirectory)
+        self.version = version
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
     }
 
     func file(for key: FileKey, extension ext: String) -> URL {
-        let identity = "v1|\(key.url.path)|\(key.fileSize)|\(key.modificationDate.timeIntervalSinceReferenceDate)"
+        let identity = "v\(version)|\(key.url.path)|\(key.fileSize)|\(key.modificationDate.timeIntervalSinceReferenceDate)"
         let digest = SHA256.hash(data: Data(identity.utf8))
         let name = digest.prefix(16).map { String(format: "%02x", $0) }.joined()
         return url.appending(path: "\(name).\(ext)")

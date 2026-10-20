@@ -35,7 +35,7 @@ nonisolated enum WaveformAnalyzer {
     private static let sampleWindow: AVAudioFrameCount = 4096
 
     static func analyze(_ url: URL) -> Waveform? {
-        guard let file = try? AVAudioFile(forReading: url) else { return nil }
+        guard let file = try? AudioFileReader(forReading: url) else { return nil }
         let length = file.length
         let format = file.processingFormat
         let channelCount = Int(format.channelCount)
@@ -115,7 +115,8 @@ nonisolated enum WaveformAnalyzer {
 
 /// Waveforms are stored as tiny files (one byte per bucket) so folders open instantly next time.
 nonisolated enum WaveformCache {
-    static let directory = CacheDirectory("Waveforms")
+    /// Version 2: Ogg Vorbis waveforms cover every frame of the sound (see `AudioFileReader`).
+    static let directory = CacheDirectory("Waveforms", version: 2)
 
     static func load(_ key: FileKey) async -> Waveform? {
         let location = directory.file(for: key, extension: "peaks")
