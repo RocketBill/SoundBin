@@ -168,7 +168,7 @@ enum DebugLaunchOptions {
                     print("[script] wrote \(url.path)")
                 }
             case "sidebar":
-                toggleSidebar()
+                await toggleSidebar()
             case "toolbar":
                 dumpToolbar()
             case "hitrow":
@@ -232,30 +232,69 @@ enum DebugLaunchOptions {
         try? await Task.sleep(for: .milliseconds(500))
     }
 
-    /// Shows or hides the sidebar, as its toolbar button does. Works even when SoundBin isn't the active app.
-    private static func toggleSidebar() {
+    /// Shows or hides the sidebar, as its toolbar button does, then reports every position the button passes
+    /// through while the sidebar animates and any toolbar items SwiftUI adds or removes meanwhile.
+    /// Works even when SoundBin isn't the active app.
+    private static func toggleSidebar() async {
         func find(_ view: NSView) -> NSSplitViewController? {
             if let controller = (view as? NSSplitView)?.delegate as? NSSplitViewController { return controller }
             return view.subviews.lazy.compactMap(find).first
         }
-        guard let root = mainWindow?.contentView, let controller = find(root) else { return }
+        guard let window = mainWindow, let root = window.contentView, let controller = find(root) else { return }
+        let changes = ToolbarChangeLog()
         controller.toggleSidebar(nil)
+        var positions: [CGFloat] = []
+        for _ in 0..<60 {
+            window.layoutIfNeeded()
+            if let x = toolbarFrames(in: window).first(where: { $0.id.hasSuffix(".toggleSidebar") })?.frame.minX, positions.last != x {
+                positions.append(x)
+            }
+            try? await Task.sleep(for: .milliseconds(8))
+        }
+        print("[toolbar] sidebar button x while toggling: \(positions), toolbar changes: \(changes.entries)")
     }
 
-    /// Lists the toolbar's items in order, then the frame of each one in the window.
-    private static func dumpToolbar() {
-        guard let window = mainWindow, let root = window.contentView?.superview else { return }
-        print("[toolbar] items \(window.toolbar?.items.map(\.itemIdentifier.rawValue) ?? [])")
+    /// Records toolbar items added and removed while it's alive.
+    private final class ToolbarChangeLog: NSObject {
+        private(set) var entries: [String] = []
+
+        override init() {
+            super.init()
+            NotificationCenter.default.addObserver(self, selector: #selector(added(_:)), name: NSToolbar.willAddItemNotification, object: nil)
+            NotificationCenter.default.addObserver(self, selector: #selector(removed(_:)), name: NSToolbar.didRemoveItemNotification, object: nil)
+        }
+
+        @objc private func added(_ notification: Notification) { record("+", notification) }
+        @objc private func removed(_ notification: Notification) { record("-", notification) }
+
+        private func record(_ change: String, _ notification: Notification) {
+            entries.append(change + ((notification.userInfo?["item"] as? NSToolbarItem)?.itemIdentifier.rawValue ?? "?"))
+        }
+    }
+
+    /// The toolbar's item views and their frames in the window.
+    private static func toolbarFrames(in window: NSWindow) -> [(id: String, frame: NSRect)] {
+        var frames: [(id: String, frame: NSRect)] = []
         func walk(_ view: NSView) {
-            if String(describing: type(of: view)).contains("ToolbarItemViewer") {
+            if String(describing: type(of: view)).contains("ToolbarItemViewer"), !view.isHidden {
                 let frame = view.convert(view.bounds, to: nil)
                 if frame.minY > window.frame.height - 60 {
-                    print("[toolbar] \((view.value(forKey: "item") as? NSToolbarItem)?.itemIdentifier.rawValue ?? "-") \(frame)")
+                    frames.append(((view.value(forKey: "item") as? NSToolbarItem)?.itemIdentifier.rawValue ?? "-", frame))
                 }
             }
             view.subviews.forEach(walk)
         }
-        walk(root)
+        window.contentView?.superview.map(walk)
+        return frames
+    }
+
+    /// Lists the toolbar's items in order, then the frame of each one in the window.
+    private static func dumpToolbar() {
+        guard let window = mainWindow else { return }
+        print("[toolbar] items \(window.toolbar?.items.map { $0.itemIdentifier.rawValue + ($0.isHidden ? " (hidden)" : "") } ?? [])")
+        for (id, frame) in toolbarFrames(in: window) {
+            print("[toolbar] \(id) \(frame)")
+        }
     }
 
     /// Walks across the window at height `y` (from the bottom) and reports which view would receive a click

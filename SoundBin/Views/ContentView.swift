@@ -18,37 +18,41 @@ struct ContentView: View {
 ///
 /// SwiftUI puts a flexible space in front of the button, which pushes it to the sidebar's far edge while the
 /// sidebar is open and back beside the window controls when it closes, so it jumps under the pointer.
-/// Removing that space keeps SwiftUI's own button, with its menu command and saved state.
-/// (Moving the button in front of the space instead pushes it into the toolbar's overflow menu.)
+/// Hiding that space keeps SwiftUI's own button, with its menu command and saved state. Removing the space
+/// instead makes SwiftUI add it back the first time the sidebar toggles, and moving the button in front of
+/// it pushes the button into the toolbar's overflow menu.
 private struct SidebarButtonPin: NSViewRepresentable {
     func makeNSView(context: Context) -> PinView { PinView() }
     func updateNSView(_ nsView: PinView, context: Context) {}
 
     final class PinView: NSView {
-        private var toolbarObserver: NSObjectProtocol?
+        override init(frame: NSRect) {
+            super.init(frame: frame)
+            // Hide the space as it's added, before it's ever drawn. This view exists before SwiftUI fills in the toolbar.
+            NotificationCenter.default.addObserver(self, selector: #selector(toolbarWillAddItem(_:)),
+                                                   name: NSToolbar.willAddItemNotification, object: nil)
+        }
+
+        @available(*, unavailable)
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
-        override func viewDidMoveToWindow() {
-            super.viewDidMoveToWindow()
-            if let toolbarObserver { NotificationCenter.default.removeObserver(toolbarObserver) }
-            toolbarObserver = nil
-            guard window != nil else { return }
-            // SwiftUI fills in the toolbar after this view joins the window, and may rebuild it later.
-            toolbarObserver = NotificationCenter.default.addObserver(
-                forName: NSToolbar.willAddItemNotification, object: nil, queue: .main
-            ) { [weak self] _ in
-                // The item isn't in the toolbar until this notification has been delivered.
-                DispatchQueue.main.async { self?.pin() }
+        @objc private func toolbarWillAddItem(_ notification: Notification) {
+            guard let toolbar = notification.object as? NSToolbar,
+                  let item = notification.userInfo?["item"] as? NSToolbarItem,
+                  let index = notification.userInfo?["newIndex"] as? Int else { return }
+            let items = toolbar.items
+            // When the window opens, SwiftUI adds the space and then the button; a space added later in front of the button counts too.
+            if Self.isSidebarButton(item), items.indices.contains(index - 1), items[index - 1].itemIdentifier == .flexibleSpace {
+                items[index - 1].isHidden = true
+            } else if item.itemIdentifier == .flexibleSpace, items.indices.contains(index), Self.isSidebarButton(items[index]) {
+                item.isHidden = true
             }
-            DispatchQueue.main.async { self.pin() }
         }
 
-        private func pin() {
-            guard let toolbar = window?.toolbar,
-                  let index = toolbar.items.firstIndex(where: { $0.itemIdentifier.rawValue.hasSuffix(".toggleSidebar") }),
-                  index > 0, toolbar.items[index - 1].itemIdentifier == .flexibleSpace else { return }
-            toolbar.removeItem(at: index - 1)
+        private static func isSidebarButton(_ item: NSToolbarItem) -> Bool {
+            item.itemIdentifier.rawValue.hasSuffix(".toggleSidebar")
         }
     }
 }
