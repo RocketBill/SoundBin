@@ -11,6 +11,8 @@ nonisolated struct OggVorbisLayout {
     let packetStarts: [Int64]
     /// Every frame the decoder produces, including any past the final granule position.
     let frameCount: Int64
+    /// Bytes in the largest audio packet.
+    let largestPacket: Int
 
     init?(url: URL) {
         guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return nil }
@@ -18,9 +20,10 @@ nonisolated struct OggVorbisLayout {
         self = layout
     }
 
-    private init(packetStarts: [Int64], frameCount: Int64) {
+    private init(packetStarts: [Int64], frameCount: Int64, largestPacket: Int) {
         self.packetStarts = packetStarts
         self.frameCount = frameCount
+        self.largestPacket = largestPacket
     }
 
     // MARK: Parsing
@@ -56,18 +59,21 @@ nonisolated struct OggVorbisLayout {
             offset = tableStart + segmentCount + bodyLength
         }
         guard !stream.packetStarts.isEmpty else { return nil }
-        return OggVorbisLayout(packetStarts: stream.packetStarts, frameCount: stream.frameCount)
+        return OggVorbisLayout(packetStarts: stream.packetStarts, frameCount: stream.frameCount,
+                               largestPacket: stream.largestPacket)
     }
 
     /// Reassembles packets from page segments and counts the frames each audio packet decodes to.
     private struct PacketStream {
         private(set) var packetStarts: [Int64] = []
         private(set) var frameCount: Int64 = 0
+        private(set) var largestPacket = 0
 
         private var packetIndex = 0
         /// Bytes of the packet being reassembled, kept only for the headers. Audio packets need just their first byte.
         private var header: [UInt8] = []
         private var firstByte: UInt8?
+        private var packetLength = 0
         private var blockSizes: (short: Int64, long: Int64) = (0, 0)
         private var modeIsLong: [Bool] = []
         private var modeBits = 0
@@ -80,11 +86,13 @@ nonisolated struct OggVorbisLayout {
             if packetIndex < 3 {
                 header.append(contentsOf: segment)
             }
+            packetLength += segment.count
             guard endsPacket else { return true }
             defer {
                 packetIndex += 1
                 header.removeAll()
                 firstByte = nil
+                packetLength = 0
             }
             switch packetIndex {
             case 0: return readIdentification()
@@ -92,6 +100,7 @@ nonisolated struct OggVorbisLayout {
             case 2: return readModes()
             default:
                 countAudioPacket()
+                largestPacket = max(largestPacket, packetLength)
                 return true
             }
         }

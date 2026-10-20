@@ -26,15 +26,15 @@ nonisolated final class AudioFileReader {
 
     init(forReading url: URL) throws {
         var opened: AudioFileID?
-        try CoreAudio.check(AudioFileOpenURL(url as CFURL, .readPermission, 0, &opened))
-        guard let opened else { throw CoreAudio.error(kAudioFileUnspecifiedError) }
+        try CoreAudioCall.check(AudioFileOpenURL(url as CFURL, .readPermission, 0, &opened))
+        guard let opened else { throw CoreAudioCall.error(kAudioFileUnspecifiedError) }
         do {
-            let dataFormat = try CoreAudio.property(AudioStreamBasicDescription()) {
+            let dataFormat = try CoreAudioCall.property(AudioStreamBasicDescription()) {
                 AudioFileGetProperty(opened, kAudioFilePropertyDataFormat, &$0, $1)
             }
             let isVorbis = dataFormat.mFormatID == Self.vorbisFormatID
             if isVorbis,
-               let format = Self.processingFormat(for: dataFormat, layout: CoreAudio.channelLayout(
+               let format = Self.processingFormat(for: dataFormat, layout: CoreAudioCall.channelLayout(
                    size: { AudioFileGetPropertyInfo(opened, kAudioFilePropertyChannelLayout, &$0, nil) },
                    { AudioFileGetProperty(opened, kAudioFilePropertyChannelLayout, &$0, $1) }
                )),
@@ -90,7 +90,7 @@ nonisolated final class AudioFileReader {
         case .extAudioFile(let wrapped): ExtAudioFileRead(wrapped, &frames, buffer.bufferList(receiving: frames))
         }
         buffer.frameLength = status == noErr ? frames : 0
-        try CoreAudio.check(status)
+        try CoreAudioCall.check(status)
     }
 
     // MARK: Setup
@@ -99,26 +99,27 @@ nonisolated final class AudioFileReader {
     private static func wrap(_ file: AudioFileID, keepingEveryFrame isVorbis: Bool) throws
         -> (file: ExtAudioFileRef, format: AVAudioFormat, length: AVAudioFramePosition) {
         var opened: ExtAudioFileRef?
-        try CoreAudio.check(ExtAudioFileWrapAudioFileID(file, false, &opened))
-        guard let opened else { throw CoreAudio.error(kAudioFileUnspecifiedError) }
+        try CoreAudioCall.check(ExtAudioFileWrapAudioFileID(file, false, &opened))
+        guard let opened else { throw CoreAudioCall.error(kAudioFileUnspecifiedError) }
         do {
-            let fileFormat = try CoreAudio.property(AudioStreamBasicDescription()) {
+            let fileFormat = try CoreAudioCall.property(AudioStreamBasicDescription()) {
                 ExtAudioFileGetProperty(opened, kExtAudioFileProperty_FileDataFormat, &$0, $1)
             }
             if isVorbis {
-                try keepEveryFrame(opened)
+                // If Core Audio won't take the change, the file still opens and plays, trimmed as before.
+                try? keepEveryFrame(opened)
             }
-            let layout = CoreAudio.channelLayout(
+            let layout = CoreAudioCall.channelLayout(
                 size: { ExtAudioFileGetPropertyInfo(opened, kExtAudioFileProperty_FileChannelLayout, &$0, nil) },
                 { ExtAudioFileGetProperty(opened, kExtAudioFileProperty_FileChannelLayout, &$0, $1) }
             )
             guard let format = processingFormat(for: fileFormat, layout: layout) else {
-                throw CoreAudio.error(kAudioFileUnsupportedDataFormatError)
+                throw CoreAudioCall.error(kAudioFileUnsupportedDataFormatError)
             }
-            try CoreAudio.setProperty(format.streamDescription.pointee) {
+            try CoreAudioCall.setProperty(format.streamDescription.pointee) {
                 ExtAudioFileSetProperty(opened, kExtAudioFileProperty_ClientDataFormat, $0, $1)
             }
-            let length = try CoreAudio.property(Int64(0)) {
+            let length = try CoreAudioCall.property(Int64(0)) {
                 ExtAudioFileGetProperty(opened, kExtAudioFileProperty_FileLengthFrames, &$0, $1)
             }
             return (opened, format, length)
@@ -131,13 +132,13 @@ nonisolated final class AudioFileReader {
     /// For Vorbis files `VorbisDecoder` can't lay out: stops `ExtAudioFile` trimming either end, so every
     /// frame still plays. Its length then falls short of what it reads, and seeks stay approximate.
     private static func keepEveryFrame(_ file: ExtAudioFileRef) throws {
-        var table = try CoreAudio.property(AudioFilePacketTableInfo()) {
+        var table = try CoreAudioCall.property(AudioFilePacketTableInfo()) {
             ExtAudioFileGetProperty(file, kExtAudioFileProperty_PacketTable, &$0, $1)
         }
         table.mNumberValidFrames += Int64(table.mPrimingFrames) + Int64(table.mRemainderFrames)
         table.mPrimingFrames = 0
         table.mRemainderFrames = 0
-        try CoreAudio.setProperty(table) {
+        try CoreAudioCall.setProperty(table) {
             ExtAudioFileSetProperty(file, kExtAudioFileProperty_PacketTable, $0, $1)
         }
     }
@@ -170,7 +171,7 @@ nonisolated extension AVAudioPCMBuffer {
 }
 
 /// Throwing access to Core Audio properties. Each takes the call to make, which receives the size and storage.
-nonisolated enum CoreAudio {
+nonisolated enum CoreAudioCall {
     static func property<Value: BitwiseCopyable>(
         _ initial: Value, _ get: (inout UInt32, UnsafeMutableRawPointer) -> OSStatus
     ) throws -> Value {

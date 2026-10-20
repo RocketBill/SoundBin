@@ -4,7 +4,7 @@ import AVFoundation
 ///
 /// Core Audio decodes each packet correctly but is wrong about which frames a packet produces (see
 /// `AudioFileReader`), so positions come from `OggVorbisLayout` instead. After a reset the decoder's first
-/// packet only primes it, so a seek starts one packet before the target and discards frames up to it.
+/// packet only primes it, so a seek starts one audio packet before the target and discards frames up to it.
 nonisolated final class VorbisDecoder {
     /// Every frame the file decodes to.
     let frameCount: AVAudioFramePosition
@@ -30,15 +30,11 @@ nonisolated final class VorbisDecoder {
     /// `file` must stay open for as long as the decoder is used.
     init?(file: AudioFileID, fileFormat: AudioStreamBasicDescription, outputFormat: AVAudioFormat, url: URL) {
         guard let layout = OggVorbisLayout(url: url), layout.frameCount > 0,
-              let packetCount = try? CoreAudio.property(UInt64(0), {
+              let packetCount = try? CoreAudioCall.property(UInt64(0), {
                   AudioFileGetProperty(file, kAudioFilePropertyAudioDataPacketCount, &$0, $1)
               }),
               packetCount == layout.packetStarts.count,
-              let largestPacket = try? CoreAudio.property(UInt32(0), {
-                  AudioFileGetProperty(file, kAudioFilePropertyMaximumPacketSize, &$0, $1)
-              }),
-              largestPacket > 0,
-              let cookie = try? CoreAudio.data(
+              let cookie = try? CoreAudioCall.data(
                   size: { AudioFileGetPropertyInfo(file, kAudioFilePropertyMagicCookieData, &$0, nil) },
                   { AudioFileGetProperty(file, kAudioFilePropertyMagicCookieData, &$0, $1) }
               ),
@@ -52,8 +48,10 @@ nonisolated final class VorbisDecoder {
         packetStarts = layout.packetStarts
         frameCount = layout.frameCount
         channelCount = fileFormat.mChannelsPerFrame
-        packetCapacity = largestPacket
-        packetData = .allocate(byteCount: Int(largestPacket), alignment: 16)
+        // Sized from the file itself: Core Audio reads a packet that doesn't fit as no packet at all,
+        // just as it reads an empty one.
+        packetCapacity = UInt32(layout.largestPacket)
+        packetData = .allocate(byteCount: layout.largestPacket, alignment: 16)
         packetDescription = .allocate(capacity: 1)
     }
 
@@ -93,10 +91,16 @@ nonisolated final class VorbisDecoder {
             }
         }
         let packet = max(1, low - 1)
+        // Prime with the closest packet before it that decodes audio. Empty packets decode to nothing and
+        // leave the decoder as it was, so they can't. Starting from the first packet is always safe.
+        var primer = packet - 1
+        while primer > 0, packetStarts[primer + 1] == packetStarts[primer] {
+            primer -= 1
+        }
         if let converter {
             AudioConverterReset(converter)
         }
-        nextPacket = packet - 1
+        nextPacket = primer
         framesToSkip = target - packetStarts[packet]
         position = target
     }
@@ -137,13 +141,18 @@ nonisolated final class VorbisDecoder {
         description: UnsafeMutablePointer<UnsafeMutablePointer<AudioStreamPacketDescription>?>?
     ) -> OSStatus {
         count.pointee = 0
-        guard nextPacket < packetStarts.count else { return noErr }
-        var bytes = packetCapacity
-        var packets: UInt32 = 1
-        let status = AudioFileReadPacketData(file, false, &bytes, packetDescription, Int64(nextPacket), &packets, packetData)
-        guard status == noErr else { return status }
-        guard packets > 0 else { return noErr }
-        nextPacket += 1
+        var bytes: UInt32 = 0
+        var packets: UInt32 = 0
+        // An empty packet reads as no packet. It decodes to nothing, so move on to the next. Passing
+        // the converter no packet would end the file there.
+        while packets == 0 {
+            guard nextPacket < packetStarts.count else { return noErr }
+            bytes = packetCapacity
+            packets = 1
+            let status = AudioFileReadPacketData(file, false, &bytes, packetDescription, Int64(nextPacket), &packets, packetData)
+            guard status == noErr else { return status }
+            nextPacket += 1
+        }
         data.pointee.mNumberBuffers = 1
         data.pointee.mBuffers = AudioBuffer(mNumberChannels: channelCount, mDataByteSize: bytes, mData: packetData)
         description?.pointee = packetDescription
