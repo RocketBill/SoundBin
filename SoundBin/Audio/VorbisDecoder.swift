@@ -6,7 +6,7 @@ import AVFoundation
 /// `AudioFileReader`), so positions come from `OggVorbisLayout` instead. After a reset the decoder's first
 /// packet only primes it, so a seek starts one audio packet before the target and discards frames up to it.
 nonisolated final class VorbisDecoder {
-    /// Every frame the file decodes to.
+    /// Frames in the sound, up to the final granule position.
     let frameCount: AVAudioFramePosition
     /// The next frame `read` will return.
     private(set) var position: AVAudioFramePosition = 0
@@ -33,7 +33,8 @@ nonisolated final class VorbisDecoder {
               let packetCount = try? CoreAudioCall.property(UInt64(0), {
                   AudioFileGetProperty(file, kAudioFilePropertyAudioDataPacketCount, &$0, $1)
               }),
-              packetCount == layout.packetStarts.count,
+              // Core Audio doesn't count an empty packet at the very end.
+              (layout.packetStarts.count - layout.trailingEmptyPackets...layout.packetStarts.count).contains(Int(packetCount)),
               let cookie = try? CoreAudioCall.data(
                   size: { AudioFileGetPropertyInfo(file, kAudioFilePropertyMagicCookieData, &$0, nil) },
                   { AudioFileGetProperty(file, kAudioFilePropertyMagicCookieData, &$0, $1) }
@@ -45,7 +46,8 @@ nonisolated final class VorbisDecoder {
         inputFormat = fileFormat
         self.outputFormat = outputFormat
         self.cookie = cookie
-        packetStarts = layout.packetStarts
+        // Any packets past Core Audio's count are empty, so leaving them out changes no frame's position.
+        packetStarts = Array(layout.packetStarts.prefix(Int(packetCount)))
         frameCount = layout.frameCount
         channelCount = fileFormat.mChannelsPerFrame
         // Sized from the file itself: Core Audio reads a packet that doesn't fit as no packet at all,
@@ -71,6 +73,9 @@ nonisolated final class VorbisDecoder {
             guard status == noErr else { return status }
             framesToSkip = skipped > 0 ? framesToSkip - AVAudioFramePosition(skipped) : 0
         }
+        // Stop at the end of the sound, before the padding that fills out the last packet.
+        frames = AVAudioFrameCount(min(AVAudioFramePosition(frames), frameCount - position))
+        guard frames > 0 else { return noErr }
         let status = decode(into: buffer, frames: &frames)
         position += AVAudioFramePosition(status == noErr ? frames : 0)
         return status

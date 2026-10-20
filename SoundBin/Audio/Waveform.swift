@@ -115,8 +115,8 @@ nonisolated enum WaveformAnalyzer {
 
 /// Waveforms are stored as tiny files (one byte per bucket) so folders open instantly next time.
 nonisolated enum WaveformCache {
-    /// Version 2: Ogg Vorbis waveforms cover every frame of the sound (see `AudioFileReader`).
-    static let directory = CacheDirectory("Waveforms", version: 2)
+    /// Version 3: Ogg Vorbis waveforms cover every frame of the sound (see `AudioFileReader`).
+    static let directory = CacheDirectory("Waveforms", version: 3)
 
     static func load(_ key: FileKey) async -> Waveform? {
         let location = directory.file(for: key, extension: "peaks")

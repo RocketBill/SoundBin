@@ -3,10 +3,9 @@ import AVFoundation
 /// Decodes a sound file to float PCM. Stands in for `AVAudioFile`, which mishandles Ogg Vorbis.
 ///
 /// Core Audio positions Vorbis audio by its own count of the frames in each packet, and the count is wrong.
-/// It skips 128 or more real frames at the start as if they were encoder priming, drops the frames after
-/// the final granule position, and lands seeks up to ~20 ms late. A short click can lose almost all of its
-/// sound. So Vorbis files are decoded packet by packet with exact positions (see `VorbisDecoder`), and
-/// every other format reads exactly as `AVAudioFile` would.
+/// It skips 128 or more real frames at the start as if they were encoder priming, and lands seeks up to
+/// ~20 ms late. A short click can lose almost all of its sound. So Vorbis files are decoded packet by
+/// packet with exact positions (see `VorbisDecoder`), and every other format reads exactly as `AVAudioFile` would.
 nonisolated final class AudioFileReader {
     /// Deinterleaved Float32 at the file's own sample rate and channel layout, as `AVAudioFile` reads it.
     let processingFormat: AVAudioFormat
@@ -43,7 +42,7 @@ nonisolated final class AudioFileReader {
                 length = vorbis.frameCount
                 decoder = .vorbis(vorbis)
             } else {
-                let wrapped = try Self.wrap(opened, keepingEveryFrame: isVorbis)
+                let wrapped = try Self.wrap(opened, keepingFirstFrames: isVorbis)
                 processingFormat = wrapped.format
                 length = wrapped.length
                 decoder = .extAudioFile(wrapped.file)
@@ -96,7 +95,7 @@ nonisolated final class AudioFileReader {
     // MARK: Setup
 
     /// Reads `file` through `ExtAudioFile`, as `AVAudioFile` does.
-    private static func wrap(_ file: AudioFileID, keepingEveryFrame isVorbis: Bool) throws
+    private static func wrap(_ file: AudioFileID, keepingFirstFrames isVorbis: Bool) throws
         -> (file: ExtAudioFileRef, format: AVAudioFormat, length: AVAudioFramePosition) {
         var opened: ExtAudioFileRef?
         try CoreAudioCall.check(ExtAudioFileWrapAudioFileID(file, false, &opened))
@@ -107,7 +106,7 @@ nonisolated final class AudioFileReader {
             }
             if isVorbis {
                 // If Core Audio won't take the change, the file still opens and plays, trimmed as before.
-                try? keepEveryFrame(opened)
+                try? keepFirstFrames(opened)
             }
             let layout = CoreAudioCall.channelLayout(
                 size: { ExtAudioFileGetPropertyInfo(opened, kExtAudioFileProperty_FileChannelLayout, &$0, nil) },
@@ -129,15 +128,14 @@ nonisolated final class AudioFileReader {
         }
     }
 
-    /// For Vorbis files `VorbisDecoder` can't lay out: stops `ExtAudioFile` trimming either end, so every
-    /// frame still plays. Its length then falls short of what it reads, and seeks stay approximate.
-    private static func keepEveryFrame(_ file: ExtAudioFileRef) throws {
+    /// For Vorbis files `VorbisDecoder` can't lay out: stops `ExtAudioFile` skipping real frames at the start,
+    /// so the whole sound still plays. Its length then falls short of what it reads, and seeks stay approximate.
+    private static func keepFirstFrames(_ file: ExtAudioFileRef) throws {
         var table = try CoreAudioCall.property(AudioFilePacketTableInfo()) {
             ExtAudioFileGetProperty(file, kExtAudioFileProperty_PacketTable, &$0, $1)
         }
-        table.mNumberValidFrames += Int64(table.mPrimingFrames) + Int64(table.mRemainderFrames)
+        table.mNumberValidFrames += Int64(table.mPrimingFrames)
         table.mPrimingFrames = 0
-        table.mRemainderFrames = 0
         try CoreAudioCall.setProperty(table) {
             ExtAudioFileSetProperty(file, kExtAudioFileProperty_PacketTable, $0, $1)
         }

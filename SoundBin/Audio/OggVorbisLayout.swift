@@ -4,15 +4,19 @@ import Foundation
 ///
 /// Core Audio miscounts Vorbis frames (see `AudioFileReader`), so this counts them the way the decoder
 /// produces them: each audio packet after the first yields a quarter of its own block size plus a quarter
-/// of the previous packet's.
+/// of the previous packet's. The sound ends where the last page's granule position says.
 nonisolated struct OggVorbisLayout {
     /// The first frame each audio packet decodes to, in file order. The first packet only primes the
     /// decoder, so it and the second both start at zero.
     let packetStarts: [Int64]
-    /// Every frame the decoder produces, including any past the final granule position.
+    /// Frames in the sound. The decoder produces more if the final granule position cuts the last packet short;
+    /// those are padding the encoder made up to fill the last block, and aren't part of the sound.
     let frameCount: Int64
     /// Bytes in the largest audio packet.
     let largestPacket: Int
+    /// Empty packets at the very end, which some encoders write to end the stream. They decode to nothing,
+    /// and Core Audio leaves them out of its packet count.
+    let trailingEmptyPackets: Int
 
     init?(url: URL) {
         guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return nil }
@@ -20,10 +24,11 @@ nonisolated struct OggVorbisLayout {
         self = layout
     }
 
-    private init(packetStarts: [Int64], frameCount: Int64, largestPacket: Int) {
+    private init(packetStarts: [Int64], frameCount: Int64, largestPacket: Int, trailingEmptyPackets: Int) {
         self.packetStarts = packetStarts
         self.frameCount = frameCount
         self.largestPacket = largestPacket
+        self.trailingEmptyPackets = trailingEmptyPackets
     }
 
     // MARK: Parsing
@@ -32,11 +37,15 @@ nonisolated struct OggVorbisLayout {
         var stream = PacketStream()
         var offset = 0
         var serial: UInt32?
+        // The latest granule position, and the frames decoded up to it.
+        var lastGranule: (position: Int64, frames: Int64) = (0, 0)
+        var endFrame: Int64?
         while offset + 27 <= bytes.count {
             guard bytes[offset] == 0x4F, bytes[offset + 1] == 0x67, bytes[offset + 2] == 0x67, bytes[offset + 3] == 0x53 else {
                 return nil
             }
             let isLastPage = bytes[offset + 5] & 0x04 != 0
+            let granule = bytes.loadUnaligned(fromByteOffset: offset + 6, as: Int64.self).littleEndian
             let pageSerial = bytes.loadUnaligned(fromByteOffset: offset + 14, as: UInt32.self).littleEndian
             let segmentCount = Int(bytes[offset + 26])
             let tableStart = offset + 27
@@ -54,13 +63,25 @@ nonisolated struct OggVorbisLayout {
                     guard stream.append(segment, endsPacket: length < 255) else { return nil }
                     segmentStart += Int(length)
                 }
+                // A page's granule position is the frame after the last packet that ends on it, or -1 if none does.
+                if granule >= 0 {
+                    if isLastPage {
+                        // Measure from the granule position before, as libvorbis does, since some streams don't
+                        // number their frames from zero. Only the last page's own frames can be cut, and wrapping
+                        // arithmetic means a corrupt position can't crash.
+                        let framesOnPage = stream.frameCount - lastGranule.frames
+                        let excess = lastGranule.position &+ framesOnPage &- granule
+                        endFrame = stream.frameCount - min(max(0, excess), framesOnPage)
+                    }
+                    lastGranule = (granule, stream.frameCount)
+                }
                 if isLastPage { break }
             }
             offset = tableStart + segmentCount + bodyLength
         }
         guard !stream.packetStarts.isEmpty else { return nil }
-        return OggVorbisLayout(packetStarts: stream.packetStarts, frameCount: stream.frameCount,
-                               largestPacket: stream.largestPacket)
+        return OggVorbisLayout(packetStarts: stream.packetStarts, frameCount: endFrame ?? stream.frameCount,
+                               largestPacket: stream.largestPacket, trailingEmptyPackets: stream.trailingEmptyPackets)
     }
 
     /// Reassembles packets from page segments and counts the frames each audio packet decodes to.
@@ -68,6 +89,7 @@ nonisolated struct OggVorbisLayout {
         private(set) var packetStarts: [Int64] = []
         private(set) var frameCount: Int64 = 0
         private(set) var largestPacket = 0
+        private(set) var trailingEmptyPackets = 0
 
         private var packetIndex = 0
         /// Bytes of the packet being reassembled, kept only for the headers. Audio packets need just their first byte.
@@ -101,6 +123,7 @@ nonisolated struct OggVorbisLayout {
             default:
                 countAudioPacket()
                 largestPacket = max(largestPacket, packetLength)
+                trailingEmptyPackets = packetLength == 0 ? trailingEmptyPackets + 1 : 0
                 return true
             }
         }
