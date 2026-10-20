@@ -1,6 +1,6 @@
 import AppKit
 
-/// Folder header above each group of tiles. Clicking it collapses or expands the group.
+/// Folder header above each group of tiles. Clicking its chevron, icon, name or count collapses or expands the group.
 final class SectionHeaderView: NSView, NSCollectionViewElement {
     static let identifier = NSUserInterfaceItemIdentifier("SectionHeaderView")
     static let height: CGFloat = 34
@@ -59,8 +59,12 @@ final class SectionHeaderView: NSView, NSCollectionViewElement {
         countLabel.frame = NSRect(x: titleLabel.frame.maxX + 8, y: midY - 8, width: countWidth, height: 16)
     }
 
+    /// Clicks beside the name fall through to the grid, so the empty row next to a short group doesn't collapse it.
     override func hitTest(_ point: NSPoint) -> NSView? {
-        super.hitTest(point) == nil ? nil : self
+        guard super.hitTest(point) != nil, let superview else { return nil }
+        let clickable = NSRect(x: chevron.frame.minX - 8, y: 0,
+                               width: countLabel.frame.maxX - chevron.frame.minX + 16, height: bounds.height)
+        return clickable.contains(convert(point, from: superview)) ? self : nil
     }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }

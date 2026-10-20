@@ -10,9 +10,9 @@ import SwiftUI
 ///
 /// Script commands: open <path>, source favourites, wait <seconds>, snap <name>, key <name|char>,
 /// click <section> <item>, search <text>, tile <width>, subfolders on|off, collapse <section>,
-/// sort <key> [desc], loop|playnext on|off, label <0-6> <name>, labelfilter <0,3|none>, labelmenu, hitrow <y>, drag <tile width>, updates background|autodownload on|off|dump,
+/// sort <key> [desc], loop|playnext on|off, label <0-6> <name>, labelfilter <0,3|none>, labelmenu, hitrow|hitgrid <y>, drag <tile width>, updates background|autodownload on|off|dump,
 /// selectall, collection new|show|add|remove|rename|export|delete <name>[|<new name or folder path>],
-/// window <width>x<height> [<x> <y>], shot <name>, quit.
+/// window <width>x<height> [<x> <y>], shot <name>, sidebar, toolbar, quit.
 /// Snapshots are written to the app container's tmp folder. "shot" captures the real window, glass and shadow included.
 enum DebugLaunchOptions {
     static func apply(to model: AppModel, updater: Updater) {
@@ -167,8 +167,14 @@ enum DebugLaunchOptions {
                     try? rep.representation(using: .png, properties: [:])?.write(to: url)
                     print("[script] wrote \(url.path)")
                 }
+            case "sidebar":
+                await toggleSidebar()
+            case "toolbar":
+                dumpToolbar()
             case "hitrow":
                 hitRow(at: Double(argument) ?? 0)
+            case "hitgrid":
+                hitRow(at: Double(argument) ?? 0, gridOnly: true)
             case "quit":
                 NSApp.terminate(nil)
             default:
@@ -226,13 +232,84 @@ enum DebugLaunchOptions {
         try? await Task.sleep(for: .milliseconds(500))
     }
 
+    /// Shows or hides the sidebar, as its toolbar button does, then reports every position the button passes
+    /// through while the sidebar animates and any toolbar items SwiftUI adds or removes meanwhile.
+    /// Works even when SoundBin isn't the active app.
+    private static func toggleSidebar() async {
+        func find(_ view: NSView) -> NSSplitViewController? {
+            if let controller = (view as? NSSplitView)?.delegate as? NSSplitViewController { return controller }
+            return view.subviews.lazy.compactMap(find).first
+        }
+        guard let window = mainWindow, let root = window.contentView, let controller = find(root) else { return }
+        let changes = ToolbarChangeLog()
+        controller.toggleSidebar(nil)
+        var positions: [CGFloat] = []
+        for _ in 0..<60 {
+            window.layoutIfNeeded()
+            if let x = toolbarFrames(in: window).first(where: { $0.id.hasSuffix(".toggleSidebar") })?.frame.minX, positions.last != x {
+                positions.append(x)
+            }
+            try? await Task.sleep(for: .milliseconds(8))
+        }
+        print("[toolbar] sidebar button x while toggling: \(positions), toolbar changes: \(changes.entries)")
+    }
+
+    /// Records toolbar items added and removed while it's alive.
+    private final class ToolbarChangeLog: NSObject {
+        private(set) var entries: [String] = []
+
+        override init() {
+            super.init()
+            NotificationCenter.default.addObserver(self, selector: #selector(added(_:)), name: NSToolbar.willAddItemNotification, object: nil)
+            NotificationCenter.default.addObserver(self, selector: #selector(removed(_:)), name: NSToolbar.didRemoveItemNotification, object: nil)
+        }
+
+        @objc private func added(_ notification: Notification) { record("+", notification) }
+        @objc private func removed(_ notification: Notification) { record("-", notification) }
+
+        private func record(_ change: String, _ notification: Notification) {
+            entries.append(change + ((notification.userInfo?["item"] as? NSToolbarItem)?.itemIdentifier.rawValue ?? "?"))
+        }
+    }
+
+    /// The toolbar's item views and their frames in the window.
+    private static func toolbarFrames(in window: NSWindow) -> [(id: String, frame: NSRect)] {
+        var frames: [(id: String, frame: NSRect)] = []
+        func walk(_ view: NSView) {
+            if String(describing: type(of: view)).contains("ToolbarItemViewer"), !view.isHidden {
+                let frame = view.convert(view.bounds, to: nil)
+                if frame.minY > window.frame.height - 60 {
+                    frames.append(((view.value(forKey: "item") as? NSToolbarItem)?.itemIdentifier.rawValue ?? "-", frame))
+                }
+            }
+            view.subviews.forEach(walk)
+        }
+        window.contentView?.superview.map(walk)
+        return frames
+    }
+
+    /// Lists the toolbar's items in order, then the frame of each one in the window.
+    private static func dumpToolbar() {
+        guard let window = mainWindow else { return }
+        print("[toolbar] items \(window.toolbar?.items.map { $0.itemIdentifier.rawValue + ($0.isHidden ? " (hidden)" : "") } ?? [])")
+        for (id, frame) in toolbarFrames(in: window) {
+            print("[toolbar] \(id) \(frame)")
+        }
+    }
+
     /// Walks across the window at height `y` (from the bottom) and reports which view would receive a click
-    /// along the way, as runs of x positions.
-    private static func hitRow(at y: Double) {
-        guard let window = mainWindow, let root = window.contentView?.superview else { return }
+    /// along the way, as runs of x positions. `gridOnly` asks the grid alone, since SwiftUI's hosting view
+    /// claims every point while the window is in the background.
+    private static func hitRow(at y: Double, gridOnly: Bool = false) {
+        guard let window = mainWindow, var root = window.contentView?.superview else { return }
+        if gridOnly, let container = findCollectionView(in: window.contentView)?.enclosingScrollView?.superview {
+            root = container
+            print("[hit] grid frame \(container.convert(container.bounds, to: nil))")
+        }
         var runs: [(start: Double, name: String)] = []
         for x in stride(from: 0.0, through: window.frame.width, by: 2) {
-            let name = root.hitTest(NSPoint(x: x, y: y)).map { String(describing: type(of: $0)).prefix(30) } ?? "-"
+            let point = root.superview?.convert(NSPoint(x: x, y: y), from: nil) ?? NSPoint(x: x, y: y)
+            let name = root.hitTest(point).map { String(describing: type(of: $0)).prefix(30) } ?? "-"
             if runs.last?.name != String(name) { runs.append((x, String(name))) }
         }
         print("[hit] y \(y): " + runs.map { "\(Int($0.start)) \($0.name)" }.joined(separator: " | "))
