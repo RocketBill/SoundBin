@@ -268,7 +268,7 @@ enum DebugLaunchOptions {
         @objc private func removed(_ notification: Notification) { record("-", notification) }
 
         private func record(_ change: String, _ notification: Notification) {
-            entries.append(change + ((notification.userInfo?["item"] as? NSToolbarItem)?.itemIdentifier.rawValue ?? "?"))
+            entries.append(change + ((notification.userInfo?[NSToolbarUserInfoKey.itemKey.rawValue] as? NSToolbarItem)?.itemIdentifier.rawValue ?? "?"))
         }
     }
 

@@ -40,8 +40,8 @@ private struct SidebarButtonPin: NSViewRepresentable {
 
         @objc private func toolbarWillAddItem(_ notification: Notification) {
             guard let toolbar = notification.object as? NSToolbar,
-                  let item = notification.userInfo?["item"] as? NSToolbarItem,
-                  let index = notification.userInfo?["newIndex"] as? Int else { return }
+                  let item = notification.userInfo?[NSToolbarUserInfoKey.itemKey.rawValue] as? NSToolbarItem,
+                  let index = notification.userInfo?[NSToolbarUserInfoKey.newIndexKey.rawValue] as? Int else { return }
             let items = toolbar.items
             // When the window opens, SwiftUI adds the space and then the button; a space added later in front of the button counts too.
             if Self.isSidebarButton(item), items.indices.contains(index - 1), items[index - 1].itemIdentifier == .flexibleSpace {
@@ -51,8 +51,10 @@ private struct SidebarButtonPin: NSViewRepresentable {
             }
         }
 
+        /// SwiftUI's own identifier for the button isn't public, so match its ending, and AppKit's standard
+        /// identifier in case SwiftUI moves to it.
         private static func isSidebarButton(_ item: NSToolbarItem) -> Bool {
-            item.itemIdentifier.rawValue.hasSuffix(".toggleSidebar")
+            item.itemIdentifier == .toggleSidebar || item.itemIdentifier.rawValue.hasSuffix(".toggleSidebar")
         }
     }
 }
