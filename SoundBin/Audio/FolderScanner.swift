@@ -157,15 +157,14 @@ nonisolated enum FolderScanner {
 
     /// Opens the file just far enough to learn its length and format. Files Core Audio can't decode are skipped.
     private static func readHeader(_ candidate: Candidate) -> AudioFile? {
-        guard let file = try? AVAudioFile(forReading: candidate.url) else { return nil }
-        let format = file.fileFormat
-        guard format.sampleRate > 0 else { return nil }
+        guard let file = try? AudioFileReader(forReading: candidate.url) else { return nil }
+        let format = file.processingFormat
         return AudioFile(
             url: candidate.url,
             folder: candidate.folder,
             fileSize: candidate.fileSize,
             modificationDate: candidate.modificationDate,
-            duration: Double(file.length) / file.processingFormat.sampleRate,
+            duration: Double(file.length) / format.sampleRate,
             sampleRate: format.sampleRate,
             channelCount: Int(format.channelCount)
         )

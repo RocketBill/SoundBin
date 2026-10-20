@@ -41,7 +41,7 @@ final class AudioPlayer {
 
     @ObservationIgnored private let engine = AVAudioEngine()
     @ObservationIgnored private let playerNode = AVAudioPlayerNode()
-    @ObservationIgnored private var audioFile: AVAudioFile?
+    @ObservationIgnored private var audioFile: AudioFileReader?
     @ObservationIgnored private var connectedFormat: AVAudioFormat?
     /// Frame the current segment was scheduled from; the node's own clock restarts at zero for each segment.
     @ObservationIgnored private var segmentStartFrame: AVAudioFramePosition = 0
@@ -77,9 +77,9 @@ final class AudioPlayer {
 
     /// Starts `file` from the beginning, or from `time` if given.
     func play(_ file: AudioFile, from time: TimeInterval = 0) {
-        let opened: AVAudioFile
+        let opened: AudioFileReader
         do {
-            opened = try AVAudioFile(forReading: file.url)
+            opened = try AudioFileReader(forReading: file.url)
         } catch {
             stop()
             lastError = "Couldn’t play “\(file.displayName)”."
@@ -195,7 +195,8 @@ final class AudioPlayer {
 
     /// Decodes the next chunk and queues it on the node. Scheduling the file on the node directly
     /// (`scheduleSegment`/`scheduleFile`) plays nothing at all for files whose header overstates their
-    /// length, which is common with Ogg Vorbis; reading it ourselves just stops at the real end.
+    /// length, and would need an `AVAudioFile`, which mishandles Ogg Vorbis; reading it ourselves just
+    /// stops at the real end.
     private func scheduleNextChunk() {
         guard !reachedEndOfFile, let audioFile else { return }
         let format = audioFile.processingFormat
