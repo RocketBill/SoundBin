@@ -107,6 +107,7 @@ final class SoundGridController: NSObject, NSCollectionViewDelegate, SoundCollec
 
         observePlayer()
         observeMarks()
+        observeRenaming()
     }
 
     func invalidate() {
@@ -250,8 +251,8 @@ final class SoundGridController: NSObject, NSCollectionViewDelegate, SoundCollec
     // MARK: Cells
 
     private func configure(_ item: SoundTileItem, with file: AudioFile) {
-        item.configure(with: file, isFavourite: model.isFavourite(file), labels: model.labels(of: file), waveforms: model.waveforms,
-                       artworks: showsArtwork ? model.artworks : nil)
+        item.configure(with: file, name: model.name(of: file), isFavourite: model.isFavourite(file), labels: model.labels(of: file),
+                       waveforms: model.waveforms, artworks: showsArtwork ? model.artworks : nil)
         if file.url == playback.url {
             item.setPlayback(progress: playback.progress, isPlaying: playback.isPlaying)
         } else {
@@ -301,14 +302,42 @@ final class SoundGridController: NSObject, NSCollectionViewDelegate, SoundCollec
         })
     }
 
-    /// Favourite stars and label dots change without the files changing, so visible tiles are updated in place.
+    /// Favourite stars, label dots and given names change without the files changing, so visible tiles are updated in place.
     private func observeMarks() {
+        let model = model
         let library = model.library
         observers.append(Task { [weak self] in
-            for await _ in Observations({ (library.favouritePaths, library.fileLabels) }) {
+            for await _ in Observations({ (library.favouritePaths, library.fileLabels, model.soundNames) }) {
                 self?.refreshMarks()
             }
         })
+    }
+
+    /// Rename, from a tile's menu or the Sound menu, edits the name on the tile itself.
+    private func observeRenaming() {
+        let model = model
+        observers.append(Task { [weak self] in
+            for await url in Observations({ model.renamingSound }) {
+                if let url { self?.beginRenaming(url) }
+            }
+        })
+    }
+
+    private func beginRenaming(_ url: URL) {
+        guard case .collection(let id) = model.source, let indexPath = indexPaths[url] else {
+            model.renamingSound = nil
+            return
+        }
+        scrollToReveal(indexPath)
+        collectionView.layoutSubtreeIfNeeded()
+        guard let item = collectionView.item(at: indexPath) as? SoundTileItem, let file = item.file else {
+            model.renamingSound = nil
+            return
+        }
+        item.tile.beginEditingName { [model] name in
+            if let name { model.renameSound(file, to: name, inCollection: id) }
+            if model.renamingSound == url { model.renamingSound = nil }
+        }
     }
 
     private func applyPlayback(_ snapshot: PlaybackSnapshot) {
@@ -343,6 +372,7 @@ final class SoundGridController: NSObject, NSCollectionViewDelegate, SoundCollec
     private func refreshMarks() {
         for case let item as SoundTileItem in collectionView.visibleItems() {
             if let file = item.file {
+                item.tile.show(file, name: model.name(of: file))
                 item.tile.isFavourite = model.isFavourite(file)
                 item.tile.labels = model.labels(of: file)
             }
@@ -434,6 +464,11 @@ final class SoundGridController: NSObject, NSCollectionViewDelegate, SoundCollec
         })
         menu.addItem(collectionMenuItem(for: targets))
         if case .collection = model.source {
+            if targets.count == 1 {
+                menu.addItem(ActionMenuItem("Rename", symbol: "pencil") { [model] in
+                    model.renamingSound = file.url
+                })
+            }
             menu.addItem(ActionMenuItem("Remove from Collection", symbol: "minus.circle") { [model] in
                 model.removeFromCollection(targets)
             })

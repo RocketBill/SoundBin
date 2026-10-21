@@ -76,6 +76,8 @@ struct SoundBinCommands: Commands {
             }
             .disabled(selected.isEmpty)
             if case .collection = model.source {
+                Button("Rename") { model.renamingSound = selected.first?.url }
+                    .disabled(selected.count != 1)
                 Button("Remove from Collection") { model.removeFromCollection(selected) }
                     .disabled(selected.isEmpty)
             }

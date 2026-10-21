@@ -15,6 +15,8 @@ nonisolated struct SavedFile: Codable, Identifiable, Hashable, Sendable {
     var path: String
     var bookmark: Data
     var added: Date
+    /// A name given to the sound in a collection. The file keeps its own name until the collection is made real.
+    var name: String?
 
     var id: String { path }
 }
@@ -271,6 +273,27 @@ final class Library {
     /// Paths of a collection's files, as they were when added.
     func paths(inCollection id: SavedCollection.ID) -> Set<String> {
         Set(collection(id: id)?.files.map(\.path) ?? [])
+    }
+
+    /// Names a sound within a collection. An empty name, or the file's own, puts the file's name back.
+    func setName(_ name: String, for url: URL, inCollection id: SavedCollection.ID) {
+        let path = url.standardizedFileURL.path
+        guard let index = collections.firstIndex(where: { $0.id == id }),
+              let fileIndex = collections[index].files.firstIndex(where: { $0.path == path }) else { return }
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let stored = name.isEmpty || name == url.deletingPathExtension().lastPathComponent ? nil : name
+        guard collections[index].files[fileIndex].name != stored else { return }
+        collections[index].files[fileIndex].name = stored
+        save()
+    }
+
+    /// Names given to a collection's sounds, by file path.
+    func names(inCollection id: SavedCollection.ID) -> [String: String] {
+        var names: [String: String] = [:]
+        for file in collection(id: id)?.files ?? [] {
+            if let name = file.name { names[file.path] = name }
+        }
+        return names
     }
 
     /// "Drums", then "Drums 2", "Drums 3"… as Finder names copies.

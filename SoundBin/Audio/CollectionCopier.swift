@@ -2,11 +2,12 @@ import AppKit
 
 /// Copies a collection's sounds into a new folder on disk, for "Make Real Folder".
 nonisolated enum CollectionCopier {
-    /// Creates `folder` and copies `files` into it. Same-named files are numbered as Finder would ("Kick 2.wav").
-    /// Returns the names of files that couldn't be copied, or fails if the folder itself couldn't be made.
-    /// `progress` receives the fraction done, from 0 to 1.
+    /// Creates `folder` and copies `files` into it. A sound given a name in the collection (`names`, by file path)
+    /// has it put on the front of its copy's name ("Big Kick - Kick_01.wav"). Same-named files are numbered as
+    /// Finder would ("Kick 2.wav"). Returns the names of files that couldn't be copied, or fails if the folder
+    /// itself couldn't be made. `progress` receives the fraction done, from 0 to 1.
     @concurrent
-    static func copy(_ files: [URL], into folder: URL,
+    static func copy(_ files: [URL], names: [String: String], into folder: URL,
                      progress: @escaping @Sendable (Double) -> Void) async -> Result<[String], any Error> {
         let manager = FileManager.default
         do {
@@ -22,7 +23,7 @@ nonisolated enum CollectionCopier {
             let accessing = source.startAccessingSecurityScopedResource()
             defer { if accessing { source.stopAccessingSecurityScopedResource() } }
 
-            let name = uniqueName(for: source.lastPathComponent, taken: &taken)
+            let name = uniqueName(for: copyName(for: source, names: names), taken: &taken)
             do {
                 // On APFS this makes a clone, so copies on the same disk are instant and take no extra space.
                 try manager.copyItem(at: source, to: folder.appending(path: name))
@@ -37,6 +38,12 @@ nonisolated enum CollectionCopier {
             }
         }
         return .success(failed)
+    }
+
+    /// A slash can't go in a file name on disk, so it's stored as a colon, which Finder shows as a slash.
+    private static func copyName(for source: URL, names: [String: String]) -> String {
+        guard let name = names[source.standardizedFileURL.path] else { return source.lastPathComponent }
+        return "\(name.replacingOccurrences(of: "/", with: ":")) - \(source.lastPathComponent)"
     }
 
     /// Names are compared case-insensitively, as most Mac disks treat "Kick.wav" and "kick.wav" as the same file.

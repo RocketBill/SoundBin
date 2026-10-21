@@ -12,6 +12,7 @@ import SwiftUI
 /// click <section> <item>, search <text>, tile <width>, subfolders on|off, collapse <section>,
 /// sort <key> [desc], loop|playnext on|off, label <0-6> <name>, labelfilter <0,3|none>, labelmenu, hitrow|hitgrid <y>, drag <tile width>, updates background|autodownload on|off|dump,
 /// selectall, collection new|show|add|remove|rename|export|delete <name>[|<new name or folder path>],
+/// rename <sound>|<new name>, renaming <sound> (edit the name on its tile), type <text>,
 /// window <width>x<height> [<x> <y>], shot <name>, sidebar, toolbar, quit.
 /// Snapshots are written to the app container's tmp folder. "shot" captures the real window, glass and shadow included.
 enum DebugLaunchOptions {
@@ -93,6 +94,17 @@ enum DebugLaunchOptions {
                 }
             case "key":
                 sendKey(argument)
+            case "type":
+                argument.forEach { sendKey(String($0)) }
+            case "rename":
+                // rename <sound>|<new name>, in the collection being shown
+                let names = argument.split(separator: "|", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
+                if names.count == 2, case .collection(let id) = model.source,
+                   let file = model.sections.flatMap(\.files).first(where: { model.name(of: $0) == names[0] }) {
+                    model.renameSound(file, to: names[1], inCollection: id)
+                }
+            case "renaming":
+                model.renamingSound = model.sections.flatMap(\.files).first { model.name(of: $0) == argument }?.url
             case "click":
                 let numbers = argument.split(separator: " ").compactMap { Int($0) }
                 if numbers.count == 2 { click(section: numbers[0], item: numbers[1]) }
@@ -438,6 +450,7 @@ enum DebugLaunchOptions {
         print("[dump] playing \(player.currentFile?.displayName ?? "-") isPlaying \(player.isPlaying) t \(String(format: "%.2f", player.currentTime))/\(String(format: "%.2f", player.duration)) loop \(player.isLooping) next \(player.playsNext) error \(player.lastError ?? "-")")
         print("[dump] source \(model.source?.storageKey ?? "-") title \(model.title) collections \(model.library.collections.map { "\($0.name)(\($0.files.count))" })")
         print("[dump] labels filter \(model.labelFilter.map(\.rawValue).sorted()) visible \(model.sections.flatMap(\.files).map { "\($0.displayName)\(model.labels(of: $0).map(\.rawValue).sorted())" })")
+        print("[dump] names in order \(model.sections.flatMap(\.files).map(model.name(of:))) given \(model.soundNames.values.sorted())")
         print("[dump] selection \(model.selectedFiles.map(\.displayName)) favourites \(model.library.favourites.count) visible \(model.visibleCount)/\(model.totalCount) sections \(model.sections.map { "\($0.title)(\($0.files.count)\($0.isCollapsed ? ",collapsed" : ""))" })")
         guard let window = mainWindow, let collectionView = findCollectionView(in: window.contentView) else {
             print("[dump] no collection view")

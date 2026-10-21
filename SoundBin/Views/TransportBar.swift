@@ -22,7 +22,7 @@ struct TransportBar: View {
             }
 
             VStack(alignment: .leading, spacing: 1) {
-                Text(file?.displayName ?? "Not Playing")
+                Text(file.map(model.name(of:)) ?? "Not Playing")
                     .font(.headline)
                     .foregroundStyle(file == nil ? .secondary : .primary)
                     .lineLimit(1)

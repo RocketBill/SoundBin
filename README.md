@@ -42,7 +42,7 @@
 ### Organise
 
 - **Favourites.** Star the sounds you keep coming back to (or press Full Stop) and find them all in one place, wherever they live on disk.
-- **Collections.** Group sounds from any of your folders into collections, such as everything for one track. When you're ready, make a collection into a real folder on disk.
+- **Collections.** Group sounds from any of your folders into collections, such as everything for one track. Rename sounds in a collection without touching the files themselves. When you're ready, make a collection into a real folder on disk, where a renamed sound's copy gets its new name on the front ("Big Kick - Kick_01.wav").
 - **Colour labels.** Tag sounds with Finder-style colours using ⌥⌘1 to ⌥⌘7, and name each colour after how you sort, such as Kicks or Vocals.
 - **Drag out.** Drag tiles straight into your DAW, Finder or anywhere else that accepts audio files.
 

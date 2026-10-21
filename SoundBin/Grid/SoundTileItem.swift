@@ -27,11 +27,11 @@ final class SoundTileItem: NSCollectionViewItem {
     }
 
     /// Pass `artworks` as nil when artwork display is turned off.
-    func configure(with file: AudioFile, isFavourite: Bool, labels: Set<SoundLabel>,
+    func configure(with file: AudioFile, name: String, isFavourite: Bool, labels: Set<SoundLabel>,
                    waveforms: BackgroundLoader<Waveform>, artworks: BackgroundLoader<Artwork>?) {
         let isNewFile = self.file != file
         self.file = file
-        tile.show(file)
+        tile.show(file, name: name)
         tile.isFavourite = isFavourite
         tile.labels = labels
         if isNewFile || tile.waveformView.waveform == nil {
@@ -88,6 +88,7 @@ final class SoundTileItem: NSCollectionViewItem {
         cancelWaveformRequest()
         cancelArtworkRequest()
         file = nil
+        tile.cancelEditingName()
         tile.setPlayback(progress: nil, isPlaying: false)
         tile.isHovered = false
     }
@@ -105,7 +106,7 @@ final class SoundTileItem: NSCollectionViewItem {
 
 // MARK: - Tile view
 
-final class SoundTileView: NSView {
+final class SoundTileView: NSView, NSTextFieldDelegate {
     static let padding: CGFloat = 8
     static let textHeight: CGFloat = 38
 
@@ -127,6 +128,10 @@ final class SoundTileView: NSView {
     private let labelDots = LabelDotsView()
     private var showsPlayingIcon = false
     private var isAnimatingIcon = false
+    /// Made the first time the tile's name is edited, then kept hidden between edits.
+    private var nameEditor: NSTextField?
+    private var onNameEditEnd: ((String?) -> Void)?
+    private var cancelsNameEdit = false
 
     var isSelected = false { didSet { if isSelected != oldValue { needsDisplay = true } } }
     var isHighlighted = false { didSet { if isHighlighted != oldValue { needsDisplay = true } } }
@@ -187,19 +192,94 @@ final class SoundTileView: NSView {
     override var wantsUpdateLayer: Bool { true }
 
     /// The tile handles clicks as one unit, so first-click behaviour doesn't depend on which subview is hit.
+    /// The exception is the name while it's being edited, so the text can be clicked into.
     override func hitTest(_ point: NSPoint) -> NSView? {
-        super.hitTest(point) == nil ? nil : self
+        let hit = super.hitTest(point)
+        if let hit, let nameEditor, !nameEditor.isHidden, hit.isDescendant(of: nameEditor) { return hit }
+        return hit == nil ? nil : self
     }
 
     /// Clicking a tile while another app (say, a DAW) is in front plays it straight away.
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
-    func show(_ file: AudioFile) {
-        nameLabel.stringValue = file.displayName
+    func show(_ file: AudioFile, name: String) {
+        if nameLabel.stringValue != name {
+            nameLabel.stringValue = name
+            needsLayout = true
+        }
         detailLabel.stringValue = file.summary
         setAccessibilityElement(true)
         setAccessibilityRole(.button)
-        setAccessibilityLabel("\(file.displayName), \(Format.duration(file.duration)), \(file.formatName)")
+        setAccessibilityLabel("\(name), \(Format.duration(file.duration)), \(file.formatName)")
+    }
+
+    // MARK: Renaming
+
+    /// Swaps the name for a text field, as Finder does. `onEnd` receives the edited name, or nil if
+    /// editing was cancelled. Return or Tab keeps the edit, as does clicking elsewhere; Escape cancels.
+    func beginEditingName(onEnd: @escaping (String?) -> Void) {
+        let editor = nameEditor ?? makeNameEditor()
+        editor.stringValue = nameLabel.stringValue
+        editor.isHidden = false
+        nameLabel.isHidden = true
+        onNameEditEnd = onEnd
+        cancelsNameEdit = false
+        needsLayout = true
+        layoutSubtreeIfNeeded()
+        if window?.makeFirstResponder(editor) != true { cancelEditingName() }
+    }
+
+    /// Abandons an edit in progress, as when the tile is reused for another sound.
+    func cancelEditingName() {
+        guard let nameEditor, !nameEditor.isHidden else { return }
+        cancelsNameEdit = true
+        if nameEditor.currentEditor() != nil { window?.makeFirstResponder(superview) }
+        finishEditingName()
+    }
+
+    private func makeNameEditor() -> NSTextField {
+        let editor = NSTextField(string: "")
+        editor.font = nameLabel.font
+        editor.isBordered = false
+        editor.drawsBackground = true
+        editor.backgroundColor = .textBackgroundColor
+        editor.focusRingType = .exterior
+        editor.usesSingleLineMode = true
+        editor.cell?.isScrollable = true
+        editor.cell?.wraps = false
+        editor.delegate = self
+        addSubview(editor)
+        nameEditor = editor
+        return editor
+    }
+
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        switch selector {
+        case #selector(cancelOperation(_:)):
+            cancelsNameEdit = true
+            fallthrough
+        case #selector(insertNewline(_:)), #selector(insertTab(_:)), #selector(insertBacktab(_:)):
+            // Focus goes back to the grid, so the arrow keys carry on moving between sounds. That ends the edit.
+            window?.makeFirstResponder(superview)
+            return true
+        default:
+            return false
+        }
+    }
+
+    func controlTextDidEndEditing(_ notification: Notification) {
+        finishEditingName()
+    }
+
+    private func finishEditingName() {
+        guard let nameEditor, !nameEditor.isHidden else { return }
+        let name = cancelsNameEdit ? nil : nameEditor.stringValue
+        // Hidden rather than removed, as this can run while the field is still finishing its own editing.
+        nameEditor.isHidden = true
+        nameLabel.isHidden = false
+        let onEnd = onNameEditEnd
+        onNameEditEnd = nil
+        onEnd?(name)
     }
 
     func setPlayback(progress: Double?, isPlaying: Bool) {
@@ -292,6 +372,8 @@ final class SoundTileView: NSView {
         let nameWidth = min(ceil(nameLabel.attributedStringValue.size().width) + 4, max(0, nameRoom))
         nameLabel.frame = NSRect(x: nameX, y: textTop, width: nameWidth, height: 17)
         labelDots.frame = NSRect(x: nameLabel.frame.maxX + 2, y: textTop + 2.5, width: dotsWidth, height: 12)
+        // While editing, the name gets the whole width, covering the label dots.
+        nameEditor?.frame = NSRect(x: nameX, y: textTop, width: max(0, bounds.width - nameX - padding), height: 17)
         detailLabel.frame = NSRect(x: padding + 1, y: textTop + 18, width: width - 1, height: 15)
     }
 

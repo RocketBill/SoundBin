@@ -38,6 +38,8 @@ nonisolated struct Arrangement: Equatable, Sendable {
     var key: SortKey
     var ascending: Bool
     var rootTitle: String
+    /// Names given to sounds in a collection, by file path, which they sort by in place of their file names.
+    var names: [String: String] = [:]
 }
 
 nonisolated enum Preferences {
@@ -137,6 +139,10 @@ final class AppModel {
 
     /// The collection whose name is being edited in the sidebar, as happens straight after making one.
     var renamingCollection: SavedCollection.ID?
+    /// The sound whose name is being edited in the grid.
+    var renamingSound: URL?
+    /// Names given to sounds in the collection being shown, by file path. Everywhere else, sounds go by their file names.
+    private(set) var soundNames: [String: String] = [:]
     /// How far along each collection being made into a real folder is, from 0 to 1.
     private(set) var folderCopyProgress: [SavedCollection.ID: Double] = [:]
 
@@ -261,7 +267,7 @@ final class AppModel {
     // MARK: Loading
 
     private var arrangement: Arrangement {
-        Arrangement(key: sortKey, ascending: sortAscending, rootTitle: rootTitle)
+        Arrangement(key: sortKey, ascending: sortAscending, rootTitle: rootTitle, names: soundNames)
     }
 
     private var rootPath: String? {
@@ -291,6 +297,7 @@ final class AppModel {
         scannedCount = 0
         folderIsMissing = false
         isScanning = false
+        soundNames = names(in: source)
         if !searchText.isEmpty { searchText = "" }
 
         switch source {
@@ -388,6 +395,8 @@ final class AppModel {
         case .favourites, .collection:
             let urls = listedURLs(in: source)
             urls.forEach(beginAccess)
+            // Names follow sounds that have moved since they were added.
+            updateSoundNames()
             let known = files.isEmpty ? (listings[source]?.files ?? []) : files
             // Favourites are grouped by the folder each sound came from; collections are one flat grid.
             let grouped = source == .favourites
@@ -497,7 +506,7 @@ final class AppModel {
                 guard let self else { return }
                 guard source != self.source, listings[source] == nil,
                       let files = await ListingStore.load(source, root: rootPath) else { continue }
-                let arrangement = Arrangement(key: sortKey, ascending: sortAscending, rootTitle: title)
+                let arrangement = Arrangement(key: sortKey, ascending: sortAscending, rootTitle: title, names: names(in: source))
                 let arranged = await Self.arrange(files, arrangement)
                 guard source != self.source, listings[source] == nil else { continue }
                 listings[source] = Listing(rootPath: rootPath, files: files, arranged: arranged, arrangement: arrangement)
@@ -513,7 +522,8 @@ final class AppModel {
         arrangeTask?.cancel()
         let generation = loadGeneration
         let (current, files, arrangement) = (source, files, arrangement)
-        let others = listings.filter { $0.key != current }.map { ($0.key, $0.value.files, $0.value.arrangement?.rootTitle) }
+        let others = listings.filter { $0.key != current }
+            .map { ($0.key, $0.value.files, $0.value.arrangement?.rootTitle, names(in: $0.key)) }
         arrangeTask = Task { [weak self] in
             if !files.isEmpty {
                 let arranged = await Self.arrange(files, arrangement)
@@ -524,9 +534,9 @@ final class AppModel {
                     rememberListing(saving: false)
                 }
             }
-            for (source, files, title) in others {
+            for (source, files, title, names) in others {
                 guard let rootTitle = title ?? self?.rootTitle(for: source) else { continue }
-                let other = Arrangement(key: arrangement.key, ascending: arrangement.ascending, rootTitle: rootTitle)
+                let other = Arrangement(key: arrangement.key, ascending: arrangement.ascending, rootTitle: rootTitle, names: names)
                 let arranged = await Self.arrange(files, other)
                 guard let self, !Task.isCancelled else { return }
                 guard source != self.source, listings[source]?.files == files else { continue }
@@ -552,25 +562,31 @@ final class AppModel {
     private nonisolated static func arrangeNow(_ files: [AudioFile], _ arrangement: Arrangement) -> [FileSection] {
         FolderScanner.group(files, rootTitle: arrangement.rootTitle).map { section in
             var section = section
-            section.files = sort(section.files, by: arrangement.key, ascending: arrangement.ascending)
+            section.files = sort(section.files, by: arrangement.key, ascending: arrangement.ascending, names: arrangement.names)
             return section
         }
     }
 
-    private nonisolated static func sort(_ files: [AudioFile], by key: SortKey, ascending: Bool) -> [AudioFile] {
-        files.sorted { lhs, rhs in
+    private nonisolated static func sort(_ files: [AudioFile], by key: SortKey, ascending: Bool,
+                                         names: [String: String]) -> [AudioFile] {
+        // Given names are looked up once per file, rather than on every comparison.
+        let named = files.map { file in
+            (file: file, name: names.isEmpty ? file.displayName : names[file.url.standardizedFileURL.path] ?? file.displayName)
+        }
+        return named.sorted { lhs, rhs in
             var order: ComparisonResult = switch key {
             case .name: .orderedSame
-            case .duration: compare(lhs.duration, rhs.duration)
-            case .dateModified: compare(lhs.modificationDate, rhs.modificationDate)
-            case .size: compare(lhs.fileSize, rhs.fileSize)
-            case .format: lhs.formatName.compare(rhs.formatName)
+            case .duration: compare(lhs.file.duration, rhs.file.duration)
+            case .dateModified: compare(lhs.file.modificationDate, rhs.file.modificationDate)
+            case .size: compare(lhs.file.fileSize, rhs.file.fileSize)
+            case .format: lhs.file.formatName.compare(rhs.file.formatName)
             }
             if order == .orderedSame {
-                order = lhs.displayName.localizedStandardCompare(rhs.displayName)
+                order = lhs.name.localizedStandardCompare(rhs.name)
             }
             return ascending ? order == .orderedAscending : order == .orderedDescending
         }
+        .map(\.file)
     }
 
     private nonisolated static func compare<T: Comparable>(_ lhs: T, _ rhs: T) -> ComparisonResult {
@@ -587,8 +603,10 @@ final class AppModel {
         var visible = 0
 
         for section in arrangedSections where showsSubfolders || section.id.isEmpty {
+            // A renamed sound can still be found by its file name.
             var matches = query.isEmpty ? section.files : section.files.filter {
                 $0.displayName.localizedStandardContains(query) || section.title.localizedStandardContains(query)
+                    || (!soundNames.isEmpty && name(of: $0).localizedStandardContains(query))
             }
             if !labelFilter.isEmpty {
                 matches = matches.filter { !library.labels(for: $0.url).isDisjoint(with: labelFilter) }
@@ -640,6 +658,11 @@ final class AppModel {
 
     func labels(of file: AudioFile) -> Set<SoundLabel> {
         library.labels(for: file.url)
+    }
+
+    /// What a sound is called where it's shown: the name it was given in the collection, or else its file name.
+    func name(of file: AudioFile) -> String {
+        soundNames.isEmpty ? file.displayName : soundNames[file.url.standardizedFileURL.path] ?? file.displayName
     }
 
     /// Adds the label to every target, or removes it if they all have it already.
@@ -740,6 +763,28 @@ final class AppModel {
         removeFromCurrentListing(Set(targets.map(\.url)))
     }
 
+    /// Gives a sound a name in a collection, leaving the file alone. When the collection is made into a real
+    /// folder, the name goes on the front of the copy's file name. An empty name puts the file's name back.
+    func renameSound(_ file: AudioFile, to name: String, inCollection id: SavedCollection.ID) {
+        library.setName(name, for: file.url, inCollection: id)
+        if source == .collection(id), updateSoundNames() { rearrange() }
+    }
+
+    private func names(in source: BrowseSource?) -> [String: String] {
+        guard case .collection(let id) = source else { return [:] }
+        return library.names(inCollection: id)
+    }
+
+    /// Picks up names given since the collection was shown, or that followed their sounds to new paths.
+    /// Returns true if any changed.
+    @discardableResult
+    private func updateSoundNames() -> Bool {
+        let names = names(in: source)
+        guard names != soundNames else { return false }
+        soundNames = names
+        return true
+    }
+
     func renameCollection(_ id: SavedCollection.ID, to name: String) {
         library.renameCollection(id: id, to: name)
         if source == .collection(id), let collection = library.collection(id: id), collection.name != rootTitle {
@@ -776,6 +821,7 @@ final class AppModel {
     func makeRealFolder(_ id: SavedCollection.ID, at destination: URL) {
         guard let collection = library.collection(id: id), folderCopyProgress[id] == nil else { return }
         let (sources, missing) = library.resolveFiles(inCollection: id)
+        let names = library.names(inCollection: id)
         folderCopyProgress[id] = 0
         let progress: @Sendable (Double) -> Void = { [weak self] fraction in
             Task { @MainActor in
@@ -784,7 +830,7 @@ final class AppModel {
         }
 
         Task { [weak self] in
-            let result = await CollectionCopier.copy(sources, into: destination, progress: progress)
+            let result = await CollectionCopier.copy(sources, names: names, into: destination, progress: progress)
             guard let self else { return }
             folderCopyProgress[id] = nil
             switch result {
