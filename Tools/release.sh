@@ -1,6 +1,6 @@
 #!/bin/zsh
 # Builds a notarized SoundBin release and publishes it, with its Sparkle update feed, as a GitHub release.
-# The release is a disk image with an Applications shortcut; people download it, and Sparkle updates from it.
+# Sparkle uses the disk image; the separate CLEM ZIP installs the same app into Applications.
 #
 #   Tools/release.sh [--dry-run | --yes] [release-notes.md]
 #
@@ -23,6 +23,9 @@
 #      and offline; if it's lost, copies of SoundBin already out there can never be updated again:
 #        build/release/DerivedData/SourcePackages/artifacts/sparkle/Sparkle/bin/generate_keys -x <file>
 #      (that path exists after the first run; any copy of Sparkle's generate_keys works).
+#      On a Mac whose Keychain already holds another app's Sparkle key, import SoundBin's under its own
+#      name, which the script looks for first: generate_keys --account SoundBin -f <file>
+#      Never import over or delete the other key; that app's copies could never be updated again.
 #
 # If macOS asks whether Sparkle's tools may use the signing key, choose Always Allow.
 #
@@ -99,10 +102,18 @@ mkdir -p $OUT/updates
 step "Checking the update signing key"
 xcodebuild -resolvePackageDependencies -project SoundBin.xcodeproj -scheme SoundBin -derivedDataPath $OUT/DerivedData -quiet
 SPARKLE_BIN=$OUT/DerivedData/SourcePackages/artifacts/sparkle/Sparkle/bin
-keychain_key=$($SPARKLE_BIN/generate_keys -p 2>/dev/null | tail -1)
-# A mismatch would publish an update every copy of SoundBin rejects.
-[[ $keychain_key == $PUBLIC_KEY ]] \
-    || fail "SPARKLE_PUBLIC_KEY in the project doesn't match the Sparkle key in your Keychain ($keychain_key)."
+# A Mac can hold other apps' Sparkle keys too, so look for SoundBin's under its own name first, then
+# under Sparkle's default. Signing with any other key would publish an update every copy of SoundBin rejects.
+SPARKLE_ACCOUNT=""
+for account in SoundBin ed25519; do
+    if [[ $($SPARKLE_BIN/generate_keys --account $account -p 2>/dev/null | tail -1) == $PUBLIC_KEY ]]; then
+        SPARKLE_ACCOUNT=$account
+        break
+    fi
+done
+[[ -n $SPARKLE_ACCOUNT ]] \
+    || fail "No Sparkle key in your Keychain matches SPARKLE_PUBLIC_KEY in the project. See the setup notes."
+print "Using the Keychain's \"$SPARKLE_ACCOUNT\" Sparkle key."
 
 step "Fetching the current update feed"
 # generate_appcast adds the new version to the existing feed, so earlier entries are kept.
@@ -173,6 +184,7 @@ spctl --assess --type open --context context:primary-signature $DMG || fail "Gat
 
 step "Signing the update feed"
 $SPARKLE_BIN/generate_appcast \
+    --account $SPARKLE_ACCOUNT \
     --embed-release-notes \
     --download-url-prefix "https://github.com/$REPO/releases/download/$TAG/" \
     --link "https://github.com/$REPO" \
@@ -180,6 +192,11 @@ $SPARKLE_BIN/generate_appcast \
 # generate_appcast only warns when it can't sign an update, so make sure it did.
 grep -q "SoundBin-$VERSION.dmg\"[^>]*sparkle:edSignature=" $OUT/updates/appcast.xml \
     || fail "The new update in appcast.xml isn't signed, so Sparkle would refuse to install it."
+
+step "Packaging for CLEM"
+# Keep this outside updates/ so generate_appcast never offers the CLEM wrapper to Sparkle.
+CLEM_ZIP=$OUT/SoundBin_CLEM.zip
+zsh Tools/package-clem.sh "$APP" "$CLEM_ZIP"
 
 if $DRY_RUN; then
     print "\nDry run finished. The notarized app and signed feed for $VERSION ($BUILD_NUMBER) are in $OUT."
@@ -196,7 +213,7 @@ print
 
 notes_args=(--generate-notes)
 [[ -z $NOTES ]] || notes_args=(--notes-file $NOTES)
-gh release create $TAG $DMG $OUT/updates/appcast.xml \
+gh release create $TAG $DMG $OUT/updates/appcast.xml $CLEM_ZIP \
     --repo $REPO --target $(git rev-parse HEAD) --title "SoundBin $VERSION" $notes_args
 
 print "\nReleased $TAG: https://github.com/$REPO/releases/tag/$TAG"

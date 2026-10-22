@@ -54,6 +54,8 @@ Download the latest version from [Releases](https://github.com/RocketBill/SoundB
 
 SoundBin checks for new versions daily and offers to install them. You can turn this off, or have updates install themselves, in Settings.
 
+SoundBin can also be installed through CLEM using the `SoundBin_CLEM.zip` release asset. CLEM installs it into Applications; SoundBin continues to manage its own updates through Sparkle.
+
 ## Building from source
 
 1. Clone the repo:
@@ -68,7 +70,9 @@ The only dependency is [Sparkle](https://sparkle-project.org), for updates, whic
 
 ## Releasing
 
-`Tools/release.sh` builds a release, signs it with Developer ID, notarizes it and publishes it as a GitHub release: a disk image, plus the signed Sparkle feed that existing copies check for updates. Run it with `--dry-run` first to do everything except publishing. The setup it needs, and how to bump versions, is described at the top of the script.
+`Tools/release.sh` builds a release, signs it with Developer ID, notarizes it and publishes it as a GitHub release: a disk image, the signed Sparkle feed that existing copies check for updates, and `SoundBin_CLEM.zip` for CLEM. The CLEM package contains the same notarized app and is kept outside Sparkle’s update feed. Run it with `--dry-run` first to do everything except publishing. The setup it needs, and how to bump versions, is described at the top of the script.
+
+To package an existing signed and notarized app without rebuilding or publishing, run `zsh Tools/package-clem.sh /path/to/SoundBin.app /path/to/SoundBin_CLEM.zip`.
 
 ## Privacy
 
